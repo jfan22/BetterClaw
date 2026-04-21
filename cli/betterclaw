@@ -24,6 +24,265 @@ const RUN_LOG_PATH = path.join(PLUGIN_ROOT, "run.jsonl");
 const APPROVALS_DIR = path.join(PLUGIN_ROOT, "approvals");
 const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
 
+// Shared design language for every HTML output. Editorial / auditor's journal:
+// warm paper, ink, restrained palette, serif headers, mono for tool names and
+// IDs. Hard edges, no fuzzy SaaS rounded-corners. The conceptual metaphor is
+// "inspecting the agent's record" — everything is readable and auditable.
+const SHARED_CSS = `
+  :root {
+    --paper:       #f6f2e8;
+    --paper-edge:  #eeeada;
+    --ink:         #1c1c24;
+    --ink-soft:    #3b3b45;
+    --muted:       #6b6860;
+    --hairline:    #c5bfac;
+    --allow:       #27613f;
+    --allow-bg:    #c5e3d1;
+    --pending:     #8f5a18;
+    --pending-bg:  #f5e3ba;
+    --deny:        #7a2418;
+    --deny-bg:     #eec6bc;
+    --accent:      #1c3b5a;
+    --flash-bg:    #fff2c4;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-feature-settings: "kern", "liga", "onum";
+  }
+  body { padding: 2.25rem 2.5rem 3rem; max-width: 1280px; margin: 0 auto; }
+  .page-title {
+    font: 400 28px/1.15 ui-serif, "Iowan Old Style", Charter, Georgia, Cambria, serif;
+    letter-spacing: -0.015em;
+    margin: 0 0 0.15rem;
+    color: var(--ink);
+  }
+  .page-title em {
+    font-style: italic;
+    color: var(--ink-soft);
+  }
+  .kicker {
+    font: 500 11px/1 ui-monospace, "SFMono-Regular", Menlo, "Cascadia Code", monospace;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 1.25rem;
+  }
+  .rule {
+    border: 0; border-top: 1.5px solid var(--ink);
+    margin: 1rem 0 1.5rem;
+  }
+  .hairline {
+    border: 0; border-top: 1px solid var(--hairline);
+    margin: 1.25rem 0;
+  }
+  h2.section {
+    font: 500 18px/1.2 ui-serif, "Iowan Old Style", Charter, Georgia, Cambria, serif;
+    margin: 0 0 0.3rem;
+    color: var(--ink);
+  }
+  .label {
+    font: 500 11px/1 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, "Cascadia Code", monospace; }
+  code {
+    font: 13px/1.4 ui-monospace, "SFMono-Regular", Menlo, monospace;
+    color: var(--ink);
+    background: var(--paper-edge);
+    padding: 1px 5px;
+    border: 1px solid var(--hairline);
+    border-radius: 2px;
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    padding: 0.25rem 0.65rem;
+    border: 1.5px solid var(--ink);
+    border-radius: 999px;
+    font: 500 12px/1 ui-monospace, Menlo, monospace;
+    letter-spacing: 0.05em;
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .chip.allow   { color: var(--allow);   border-color: var(--allow);   background: var(--allow-bg); }
+  .chip.deny    { color: var(--deny);    border-color: var(--deny);    background: var(--deny-bg); }
+  .chip.pending { color: var(--pending); border-color: var(--pending); background: var(--pending-bg); }
+  .chip.live {
+    color: var(--paper); border-color: var(--allow); background: var(--allow);
+  }
+  .chip.live::before {
+    content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--paper); animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+  .card {
+    background: var(--paper);
+    border: 1.5px solid var(--ink);
+    padding: 1.25rem 1.5rem;
+  }
+  .card h2 { margin-top: 0; }
+  .summary {
+    display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;
+    padding: 0.9rem 1.1rem;
+    background: transparent;
+    border-top: 1px solid var(--hairline);
+    border-bottom: 1px solid var(--hairline);
+    margin-bottom: 1.5rem;
+  }
+  .summary .meta { color: var(--muted); font-size: 13px; margin-left: auto; }
+
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    gap: 1.5rem;
+  }
+  .mermaid-wrap {
+    background: var(--paper);
+    border: 1.5px solid var(--ink);
+    padding: 1.5rem;
+    min-height: 360px;
+    overflow: auto;
+    transition: opacity 240ms ease-out;
+  }
+  .mermaid-wrap.refreshing { opacity: 0.45; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--paper);
+    border: 1.5px solid var(--ink);
+    font: 13px/1.5 ui-monospace, Menlo, monospace;
+  }
+  th, td {
+    padding: 0.55rem 0.75rem;
+    text-align: left;
+    border-bottom: 1px solid var(--hairline);
+    vertical-align: top;
+  }
+  th {
+    background: var(--paper-edge);
+    font: 500 11px/1 ui-monospace, Menlo, monospace;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  tr.dev td { background: var(--deny-bg); }
+  tr.fresh td { background: var(--flash-bg); transition: background 2s ease-out; }
+  tr:last-child td { border-bottom: 0; }
+
+  .approval-card {
+    background: var(--pending-bg);
+    border: 1.5px solid var(--pending);
+    border-left-width: 8px;
+    padding: 1.1rem 1.4rem;
+    margin: 0 0 1.25rem;
+  }
+  .approval-card h3 {
+    font: 500 15px/1.2 ui-serif, "Iowan Old Style", Charter, Georgia, serif;
+    margin: 0 0 0.35rem;
+    color: var(--ink);
+  }
+  .approval-card .meta-row {
+    color: var(--ink-soft); font-size: 13px; margin: 0.2rem 0 0.5rem;
+  }
+  .approval-card .params {
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    padding: 0.55rem 0.75rem;
+    font: 12px/1.45 ui-monospace, Menlo, monospace;
+    color: var(--ink);
+    white-space: pre-wrap;
+    max-height: 170px; overflow: auto;
+    margin: 0.5rem 0 0.75rem;
+  }
+  .approval-card .buttons {
+    display: flex; gap: 0.5rem;
+  }
+  .btn {
+    border: 1.5px solid var(--ink);
+    background: var(--paper);
+    color: var(--ink);
+    font: 500 13px/1 ui-monospace, Menlo, monospace;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    padding: 0.55rem 1rem;
+    cursor: pointer;
+  }
+  .btn.approve { background: var(--allow);   color: var(--paper); border-color: var(--allow); }
+  .btn.deny    { background: var(--deny);    color: var(--paper); border-color: var(--deny); }
+  .btn:hover:not(:disabled) { filter: brightness(0.92); }
+  .btn:disabled { opacity: 0.5; cursor: default; }
+
+  .legend {
+    display: flex; gap: 1rem; flex-wrap: wrap;
+    font: 12px/1 ui-monospace, Menlo, monospace;
+    color: var(--ink-soft);
+    margin: 0 0 1.25rem;
+  }
+  .legend .swatch {
+    display: inline-block; width: 12px; height: 12px;
+    border: 1.5px solid var(--ink); margin-right: 0.35rem; vertical-align: -2px;
+  }
+  .legend .swatch.allow { background: var(--allow-bg); border-color: var(--allow); }
+  .legend .swatch.deny  { background: var(--deny-bg);  border-color: var(--deny); }
+  .legend .swatch.change{ background: var(--pending-bg); border-color: var(--pending); }
+
+  .paragraph-quote {
+    font: italic 16px/1.55 ui-serif, "Iowan Old Style", Charter, Georgia, serif;
+    color: var(--ink-soft);
+    border-left: 3px solid var(--ink);
+    padding: 0.25rem 0 0.25rem 1rem;
+    margin: 0 0 1.5rem;
+    white-space: pre-wrap;
+  }
+
+  .footer {
+    font: italic 12px/1 ui-serif, Georgia, serif;
+    color: var(--muted);
+    margin-top: 2rem;
+    text-align: center;
+  }
+  .footer::before { content: "— "; }
+  .footer::after  { content: " —"; }
+
+  .panes {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.25rem;
+  }
+  .pane { background: var(--paper); border: 1.5px solid var(--ink); padding: 1rem 1.2rem; }
+  .pane h2 { margin: 0 0 0.2rem; }
+  .pane .meta { color: var(--muted); font-size: 13px; margin: 0 0 0.75rem; }
+`;
+
+// Mermaid themeVariables tuned to the ledger palette above. Used by every
+// view that embeds mermaid.js. Keeps the graph looking like it belongs.
+const MERMAID_INIT_JS = `
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: "base",
+    themeVariables: {
+      background: "#f6f2e8",
+      primaryColor: "#f6f2e8",
+      primaryTextColor: "#1c1c24",
+      primaryBorderColor: "#1c1c24",
+      secondaryColor: "#eeeada",
+      tertiaryColor: "#eeeada",
+      lineColor: "#1c1c24",
+      edgeLabelBackground: "#f6f2e8",
+      fontFamily: "ui-serif, 'Iowan Old Style', Charter, Georgia, serif",
+      fontSize: "14px",
+    },
+    flowchart: { useMaxWidth: false, curve: "basis", padding: 14 },
+  });
+`;
+
+
 const VERTICAL_GUIDANCE = {
   email: {
     description: "Gmail triage — search, read, draft replies.",
@@ -636,10 +895,10 @@ function buildDiffMermaid(graph, other, side) {
       lines.push(`  ${e.from} --> ${e.to}`);
     }
   }
-  lines.push(`  classDef same fill:#f5f5f5,stroke:#aaa;`);
-  lines.push(`  classDef added fill:#cfe7c7,stroke:#2a7d2a,stroke-width:2px;`);
-  lines.push(`  classDef changed fill:#fff3cd,stroke:#d4a700,stroke-width:2px;`);
-  lines.push(`  classDef entryBadge fill:#eef,stroke:#36f,stroke-width:2px;`);
+  lines.push(`  classDef same fill:#eeeada,stroke:#6b6860,stroke-width:1px;`);
+  lines.push(`  classDef added fill:#c5e3d1,stroke:#27613f,stroke-width:2px;`);
+  lines.push(`  classDef changed fill:#f5e3ba,stroke:#8f5a18,stroke-width:2px;`);
+  lines.push(`  classDef entryBadge fill:#eeeada,stroke:#1c3b5a,stroke-width:2px;`);
   lines.push(`  class start entryBadge;`);
   return lines.join("\n");
 }
@@ -654,47 +913,40 @@ function buildDiffHtml(nameA, nameB, graphA, graphB, mermaidA, mermaidB) {
 <head>
   <meta charset="utf-8">
   <title>BetterClaw — Graph diff: ${escapeHtml(nameA)} ↔ ${escapeHtml(nameB)}</title>
-  <style>
-    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 0; padding: 2rem; background: #fafafa; color: #222; }
-    h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
-    .sub { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
-    .legend { background: #fff; border: 1px solid #ddd; padding: 0.5rem 0.9rem; margin: 0 0 1.5rem; border-radius: 4px; font-size: 0.85rem; }
-    .legend span { display: inline-block; margin-right: 1rem; }
-    .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
-    .pane { background: #fff; border: 1px solid #ddd; padding: 1rem 1.2rem; border-radius: 4px; }
-    .pane h2 { margin: 0 0 0.25rem; font-size: 1.1rem; }
-    .pane .meta { color: #666; font-size: 0.85rem; margin: 0 0 0.75rem; }
-    .mermaid { overflow: auto; padding: 0.5rem 0; }
-    code { background: #f0f0f0; padding: 0 0.25em; border-radius: 3px; font-family: ui-monospace, monospace; }
-  </style>
+  <style>${SHARED_CSS}</style>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
-  <h1>Graph diff: ${escapeHtml(nameA)} ↔ ${escapeHtml(nameB)}</h1>
-  <p class="sub">Structural diff. Additions are green. Edited tool allowlists are yellow. New edges get a 🆕 label.</p>
+  <p class="kicker">BetterClaw · Graph diff</p>
+  <h1 class="page-title">${escapeHtml(nameA)} <em>↔</em> ${escapeHtml(nameB)}</h1>
+  <p class="label" style="margin: 0 0 1.25rem;">Structural differences · node id + allowed_tools + edges</p>
+  <hr class="rule"/>
 
   <div class="legend">
-    <span>🟢 Added node</span>
-    <span>🟡 Changed allowed_tools</span>
-    <span>⚫ Unchanged</span>
-    <span>🆕 New edge</span>
+    <span><span class="swatch allow"></span>added</span>
+    <span><span class="swatch change"></span>changed allowed_tools</span>
+    <span><span class="swatch"></span>unchanged</span>
+    <span class="mono">🆕 new edge</span>
   </div>
 
   <div class="panes">
     <div class="pane">
-      <h2>${escapeHtml(nameA)}</h2>
+      <h2 class="section">${escapeHtml(nameA)}</h2>
       <p class="meta">${summarize(graphA)}</p>
       <pre class="mermaid">${mermaidA}</pre>
     </div>
     <div class="pane">
-      <h2>${escapeHtml(nameB)}</h2>
+      <h2 class="section">${escapeHtml(nameB)}</h2>
       <p class="meta">${summarize(graphB)}</p>
       <pre class="mermaid">${mermaidB}</pre>
     </div>
   </div>
 
+  <p class="footer">generated ${new Date().toISOString()}</p>
+
   <script>
-    mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { useMaxWidth: false, curve: "basis" } });
+    ${MERMAID_INIT_JS}
+    mermaid.run();
   </script>
 </body>
 </html>`;
@@ -927,58 +1179,41 @@ function readCurrentState() {
 }
 
 function buildWatchPageHtml() {
-  // A single page that polls /state.json and re-renders Mermaid + timeline.
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>BetterClaw — Live run</title>
-  <style>
-    body { font: 14px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; padding: 2rem; background: #fafafa; color: #222; }
-    h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
-    .sub { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
-    .summary { background: #fff; border: 1px solid #ddd; padding: 0.9rem 1.1rem; margin: 0 0 1.5rem; border-radius: 4px; display: flex; gap: 2rem; align-items: center; }
-    .chip { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.85rem; font-weight: 600; }
-    .chip.allow { background: #cfe7c7; color: #1a5c1a; }
-    .chip.dev { background: #fde0e0; color: #8a0000; }
-    .chip.live { background: #1a5c1a; color: #fff; animation: pulse 1.6s infinite; }
-    .chip.pending { background: #fff3cd; color: #664d03; }
-    @keyframes pulse { 50% { opacity: 0.4; } }
-    .approval-banner { background: #fff3cd; border: 1px solid #d4a700; border-left: 4px solid #d4a700; padding: 1rem 1.2rem; margin: 0 0 1.5rem; border-radius: 4px; }
-    .approval-banner h3 { margin: 0 0 0.5rem; font-size: 1rem; color: #664d03; }
-    .approval-banner .params { background: #fff; padding: 0.5rem 0.75rem; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 0.8rem; white-space: pre-wrap; max-height: 150px; overflow: auto; margin: 0.5rem 0; }
-    .approval-banner .buttons { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
-    .approval-banner button { padding: 0.4rem 1rem; border: 0; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.9rem; }
-    .approval-banner button.approve { background: #2a7d2a; color: #fff; }
-    .approval-banner button.deny { background: #8a0000; color: #fff; }
-    .approval-banner button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .layout { display: grid; grid-template-columns: 1.3fr 1fr; gap: 1.5rem; }
-    .mermaid-wrap { background: #fff; border: 1px solid #ddd; padding: 1.5rem; border-radius: 4px; overflow: auto; min-height: 360px; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; }
-    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.85rem; vertical-align: top; }
-    th { background: #f5f5f5; font-weight: 600; color: #444; }
-    tr.dev td { background: #fff7f7; }
-    tr.fresh td { background: #ffffd0; transition: background 2s; }
-    code { background: #f0f0f0; padding: 0 0.25em; border-radius: 3px; font-family: ui-monospace, monospace; }
-    .meta { color: #666; font-size: 0.85rem; margin-top: 1.5rem; text-align: center; }
-  </style>
+  <style>${SHARED_CSS}</style>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
-  <h1>BetterClaw — Live run <span class="chip live" id="live-chip">LIVE</span></h1>
-  <p class="sub">Green = visited · bold edge = traversed · dashed red = attempted deviation.<br>Polling <code>/state.json</code> every 500ms.</p>
+  <p class="kicker">BetterClaw · Live run</p>
+  <h1 class="page-title">
+    Agent at work
+    <span class="chip live" style="vertical-align: middle; margin-left: 0.5rem;" id="live-chip">live</span>
+  </h1>
+  <p class="label" style="margin: 0 0 1.25rem;">Polling <span class="mono" style="text-transform: none; color: var(--ink-soft);">/state.json</span> every 500ms · green = visited · bold edge = traversed · dashed rust = attempted deviation</p>
+  <hr class="rule"/>
 
   <div class="summary">
-    <span class="chip allow" id="allowChip">0 allowed</span>
-    <span class="chip dev" id="devChip">0 deviations</span>
-    <span id="graphMeta" style="color:#666;"></span>
+    <span class="chip allow"   id="allowChip">0 allowed</span>
+    <span class="chip deny"    id="devChip">0 deviations</span>
+    <span class="chip pending" id="pendingChip" style="display:none;">0 pending</span>
+    <span class="meta" id="graphMeta"></span>
   </div>
 
   <div id="approvals"></div>
 
   <div class="layout">
-    <div class="mermaid-wrap" id="diagram"></div>
     <div>
+      <h2 class="section">Workflow graph</h2>
+      <p class="label" style="margin-bottom:0.5rem;">Live state</p>
+      <div class="mermaid-wrap" id="diagram"></div>
+    </div>
+    <div>
+      <h2 class="section">Timeline</h2>
+      <p class="label" style="margin-bottom:0.5rem;">Most recent at bottom</p>
       <table>
         <thead><tr><th>time</th><th>node</th><th>tool</th><th>detail</th></tr></thead>
         <tbody id="timeline"></tbody>
@@ -986,10 +1221,10 @@ function buildWatchPageHtml() {
     </div>
   </div>
 
-  <p class="meta" id="lastUpdate">—</p>
+  <p class="footer" id="lastUpdate">awaiting first event</p>
 
 <script>
-  mermaid.initialize({ startOnLoad: false, theme: "default", flowchart: { useMaxWidth: false, curve: "basis" } });
+  ${MERMAID_INIT_JS}
 
   let lastEventCount = -1;
   let lastDiagramSig = "";
@@ -1001,9 +1236,7 @@ function buildWatchPageHtml() {
       if (!res.ok) return;
       const state = await res.json();
       await render(state);
-    } catch (err) {
-      // server might be starting up or restarting — retry silently
-    }
+    } catch (err) { /* server may be starting; silently retry */ }
   }
 
   function escapeHtml(s) {
@@ -1012,7 +1245,7 @@ function buildWatchPageHtml() {
 
   function shortTools(ts) {
     if (!ts || ts.length === 0) return "—";
-    return ts.map(t => t.replace(/^gmail_/,"")).join(" / ");
+    return ts.map(t => t.replace(/^[a-z]+_/,"")).join(" / ");
   }
 
   async function render(state) {
@@ -1020,41 +1253,49 @@ function buildWatchPageHtml() {
     const allow = events.filter(e => e.type === "allow");
     const dev = events.filter(e => e.type === "deviation");
 
-    document.getElementById("allowChip").textContent = allow.length + " allowed";
-    document.getElementById("devChip").textContent = dev.length + " deviation" + (dev.length === 1 ? "" : "s");
-    document.getElementById("graphMeta").innerHTML = "entry: <code>" + escapeHtml(graph.entry) + "</code> · " + graph.nodes.length + " nodes · " + graph.edges.length + " edges";
-
-    // Collect pending approvals (pending minus resolved).
+    // Pending approvals
     const pendingMap = new Map();
     for (const e of events) {
       if (e.type === "approval_pending") pendingMap.set(e.id, e);
       if (e.type === "approval_resolved") pendingMap.delete(e.id);
     }
-    renderApprovals([...pendingMap.values()]);
+    const pending = [...pendingMap.values()];
 
-    // Mermaid signature — only re-render when it changes (avoid flicker)
+    document.getElementById("allowChip").textContent = allow.length + " allowed";
+    document.getElementById("devChip").textContent = dev.length + " deviation" + (dev.length === 1 ? "" : "s");
+    const pendingChip = document.getElementById("pendingChip");
+    if (pending.length > 0) {
+      pendingChip.style.display = "inline-flex";
+      pendingChip.textContent = pending.length + " pending";
+    } else {
+      pendingChip.style.display = "none";
+    }
+    document.getElementById("graphMeta").innerHTML = "entry " + escapeHtml(graph.entry) + " · " + graph.nodes.length + " nodes · " + graph.edges.length + " edges · vertical " + escapeHtml(graph.vertical || "email");
+
+    renderApprovals(pending);
+
+    // Mermaid re-render only on change
     const visited = new Set(allow.flatMap(e => [e.from_node, e.to_node]).filter(Boolean));
     const traversed = new Set();
     for (const e of allow) if (e.transitioned) traversed.add(e.from_node + "→" + e.to_node);
-    const sig = JSON.stringify({
-      g: graph,
-      v: [...visited].sort(),
-      t: [...traversed].sort(),
-      d: dev.map(d => ({ n: d.from_node, t: d.attempted_tool }))
-    });
+    const sig = JSON.stringify({ g: graph, v: [...visited].sort(), t: [...traversed].sort(),
+      d: dev.map(d => ({ n: d.from_node, t: d.attempted_tool })) });
     if (sig !== lastDiagramSig) {
       lastDiagramSig = sig;
-      const mermaid_src = buildMermaidSource(graph, visited, traversed, dev);
+      const wrap = document.getElementById("diagram");
+      wrap.classList.add("refreshing");
+      const src = buildMermaidSource(graph, visited, traversed, dev);
       const id = "diagram-svg-" + (++renderSeq);
       try {
-        const out = await mermaid.render(id, mermaid_src);
-        document.getElementById("diagram").innerHTML = out.svg;
+        const out = await mermaid.render(id, src);
+        wrap.innerHTML = out.svg;
       } catch (err) {
-        document.getElementById("diagram").textContent = "mermaid render error: " + err.message;
+        wrap.textContent = "mermaid render error: " + err.message;
       }
+      requestAnimationFrame(() => wrap.classList.remove("refreshing"));
     }
 
-    // Timeline — highlight new rows briefly
+    // Timeline
     const tbody = document.getElementById("timeline");
     const rowsHtml = events
       .filter(e => e.type === "allow" || e.type === "deviation")
@@ -1062,18 +1303,18 @@ function buildWatchPageHtml() {
         const ts = e.ts ? e.ts.split("T")[1].slice(0, 12) : "";
         const fresh = (i >= lastEventCount && lastEventCount >= 0) ? " fresh" : "";
         if (e.type === "deviation") {
-          return "<tr class=\\"dev" + fresh + "\\"><td>" + ts + "</td><td><code>" + escapeHtml(e.from_node ?? "") + "</code></td><td>❌ <code>" + escapeHtml(e.attempted_tool ?? "") + "</code></td><td>retry " + e.retry + "/" + e.retry_limit + " — " + escapeHtml(String(e.reason ?? "").slice(0, 120)) + "…</td></tr>";
+          return "<tr class=\\"dev" + fresh + "\\"><td>" + ts + "</td><td>" + escapeHtml(e.from_node ?? "") + "</td><td>✕ " + escapeHtml(e.attempted_tool ?? "") + "</td><td>retry " + e.retry + "/" + e.retry_limit + "</td></tr>";
         }
         const arrow = e.transitioned
           ? escapeHtml(e.from_node) + " → " + escapeHtml(e.to_node)
-          : "(stay in " + escapeHtml(e.from_node) + ")";
-        return "<tr class=\\"" + fresh.trim() + "\\"><td>" + ts + "</td><td><code>" + escapeHtml(e.to_node ?? e.from_node ?? "") + "</code></td><td>✓ <code>" + escapeHtml(e.tool ?? "") + "</code></td><td>" + arrow + "</td></tr>";
+          : "— " + escapeHtml(e.from_node);
+        return "<tr class=\\"" + fresh.trim() + "\\"><td>" + ts + "</td><td>" + escapeHtml(e.to_node ?? e.from_node ?? "") + "</td><td>✓ " + escapeHtml(e.tool ?? "") + "</td><td>" + arrow + "</td></tr>";
       })
       .join("");
-    tbody.innerHTML = rowsHtml;
+    tbody.innerHTML = rowsHtml || "<tr><td colspan=\\"4\\" style=\\"color: var(--muted); font-style: italic; padding: 1.5rem;\\">waiting for first tool call…</td></tr>";
     lastEventCount = allow.length + dev.length;
 
-    document.getElementById("lastUpdate").textContent = "Last poll: " + new Date().toLocaleTimeString();
+    document.getElementById("lastUpdate").textContent = "last poll " + new Date().toLocaleTimeString();
   }
 
   function buildMermaidSource(graph, visitedNodes, traversedEdges, deviationEvents) {
@@ -1086,7 +1327,7 @@ function buildWatchPageHtml() {
     for (const n of graph.nodes) {
       const purpose = (n.purpose || "").replace(/"/g,"&quot;").replace(/\\n/g," ");
       const devs = devsByNode.get(n.id);
-      const devSuffix = devs ? "<br/><b style='color:#c00;'>deviations: " + devs.length + "</b>" : "";
+      const devSuffix = devs ? "<br/><b style='color:#7a2418;'>deviations: " + devs.length + "</b>" : "";
       const label = "<b>" + n.id + "</b><br/>" + purpose + "<br/><i>tools: " + shortTools(n.allowed_tools) + "</i>" + devSuffix;
       lines.push("  " + n.id + "[\\"" + label + "\\"]");
     }
@@ -1098,14 +1339,14 @@ function buildWatchPageHtml() {
     }
     let p = 0;
     for (const d of deviationEvents) {
-      const tool = (d.attempted_tool || "unknown").replace(/^gmail_/,"");
-      lines.push("  devghost" + p + "([\\"❌ " + tool + "<br/>(deviation)\\"]):::devbox");
+      const tool = (d.attempted_tool || "unknown").replace(/^[a-z]+_/,"");
+      lines.push("  devghost" + p + "([\\"✕ " + tool + "<br/>deviation\\"]):::devbox");
       lines.push("  " + d.from_node + " -.-> devghost" + p);
       p++;
     }
-    lines.push("  classDef visited fill:#cfe7c7,stroke:#2a7d2a,stroke-width:2px;");
-    lines.push("  classDef devbox fill:#fde0e0,stroke:#c00,stroke-width:1px,stroke-dasharray:4 2;");
-    lines.push("  classDef entryBadge fill:#eef,stroke:#36f,stroke-width:2px;");
+    lines.push("  classDef visited fill:#c5e3d1,stroke:#27613f,stroke-width:2px;");
+    lines.push("  classDef devbox fill:#eec6bc,stroke:#7a2418,stroke-width:1.5px,stroke-dasharray:5 3;");
+    lines.push("  classDef entryBadge fill:#eeeada,stroke:#1c3b5a,stroke-width:2px;");
     lines.push("  class start entryBadge;");
     const visitedList = [...visitedNodes].filter(n => graph.nodes.some(gn => gn.id === n));
     if (visitedList.length > 0) lines.push("  class " + visitedList.join(",") + " visited;");
@@ -1117,20 +1358,20 @@ function buildWatchPageHtml() {
     if (pending.length === 0) { host.innerHTML = ""; return; }
     host.innerHTML = pending.map(p => {
       const paramsStr = p.params ? JSON.stringify(p.params, null, 2) : "(no params)";
-      return "<div class=\\"approval-banner\\" data-id=\\"" + escapeHtml(p.id) + "\\">" +
-        "<h3>⏸ Waiting for approval: <code>" + escapeHtml(p.tool) + "</code> at <code>" + escapeHtml(p.node) + "</code></h3>" +
-        "<div>id: <code>" + escapeHtml(p.id) + "</code></div>" +
+      return "<div class=\\"approval-card\\" data-id=\\"" + escapeHtml(p.id) + "\\">" +
+        "<h3>Awaiting approval · " + escapeHtml(p.tool) + "</h3>" +
+        "<div class=\\"meta-row\\">node <span class=\\"mono\\">" + escapeHtml(p.node) + "</span> &nbsp;·&nbsp; id <span class=\\"mono\\">" + escapeHtml(p.id) + "</span></div>" +
         "<div class=\\"params\\">" + escapeHtml(paramsStr) + "</div>" +
         "<div class=\\"buttons\\">" +
-          "<button class=\\"approve\\" onclick=\\"resolveApproval('" + p.id + "','approve',this)\\">Approve</button>" +
-          "<button class=\\"deny\\" onclick=\\"resolveApproval('" + p.id + "','deny',this)\\">Deny</button>" +
+          "<button class=\\"btn approve\\" onclick=\\"resolveApproval('" + p.id + "','approve',this)\\">Approve</button>" +
+          "<button class=\\"btn deny\\" onclick=\\"resolveApproval('" + p.id + "','deny',this)\\">Deny</button>" +
         "</div>" +
       "</div>";
     }).join("");
   }
 
   async function resolveApproval(id, decision, btn) {
-    const card = btn.closest(".approval-banner");
+    const card = btn.closest(".approval-card");
     card.querySelectorAll("button").forEach(b => b.disabled = true);
     try {
       const res = await fetch("/resolve", {
@@ -1142,8 +1383,6 @@ function buildWatchPageHtml() {
         card.querySelectorAll("button").forEach(b => b.disabled = false);
         alert("Resolve failed: " + res.status);
       }
-      // The agent will pick it up on its next 200ms poll; the next tick() here
-      // removes this banner from the UI when the resolved event arrives.
     } catch (err) {
       card.querySelectorAll("button").forEach(b => b.disabled = false);
       alert("Resolve failed: " + err.message);
@@ -1160,7 +1399,7 @@ function buildWatchPageHtml() {
 
 function buildReplayMermaid(graph, visitedNodes, traversedEdges, deviationEvents) {
   const shortTools = (tools) =>
-    tools.length > 0 ? tools.map((t) => t.replace(/^gmail_/, "")).join(" / ") : "—";
+    tools.length > 0 ? tools.map((t) => t.replace(/^[a-z]+_/, "")).join(" / ") : "—";
   const deviationsByNode = new Map();
   for (const d of deviationEvents) {
     if (!deviationsByNode.has(d.from_node)) deviationsByNode.set(d.from_node, []);
@@ -1172,7 +1411,7 @@ function buildReplayMermaid(graph, visitedNodes, traversedEdges, deviationEvents
     const purpose = n.purpose.replace(/"/g, "&quot;").replace(/\n/g, " ");
     const devs = deviationsByNode.get(n.id);
     const devSuffix = devs
-      ? `<br/><b style='color:#c00;'>deviations: ${devs.length}</b>`
+      ? `<br/><b style='color:#7a2418;'>deviations: ${devs.length}</b>`
       : "";
     const label = `<b>${n.id}</b><br/>${purpose}<br/><i>tools: ${shortTools(n.allowed_tools)}</i>${devSuffix}`;
     lines.push(`  ${n.id}["${label}"]`);
@@ -1180,7 +1419,6 @@ function buildReplayMermaid(graph, visitedNodes, traversedEdges, deviationEvents
   lines.push(`  start((entry))`);
   lines.push(`  start --> ${graph.entry}`);
 
-  // Edges: bold if traversed, else normal
   for (const e of graph.edges) {
     const key = `${e.from}→${e.to}`;
     if (traversedEdges.has(key)) {
@@ -1190,21 +1428,17 @@ function buildReplayMermaid(graph, visitedNodes, traversedEdges, deviationEvents
     }
   }
 
-  // Deviation ghost arrows — dashed red from the current node to a phantom.
   let phantomIdx = 0;
   for (const d of deviationEvents) {
     const phantom = `devghost${phantomIdx++}`;
-    const tool = (d.attempted_tool || "unknown").replace(/^gmail_/, "");
-    lines.push(
-      `  ${phantom}(["❌ ${tool}<br/>(deviation)"]):::devbox`,
-    );
+    const tool = (d.attempted_tool || "unknown").replace(/^[a-z]+_/, "");
+    lines.push(`  ${phantom}(["✕ ${tool}<br/>deviation"]):::devbox`);
     lines.push(`  ${d.from_node} -.-> ${phantom}`);
   }
 
-  // Styling
-  lines.push(`  classDef visited fill:#cfe7c7,stroke:#2a7d2a,stroke-width:2px;`);
-  lines.push(`  classDef devbox fill:#fde0e0,stroke:#c00,stroke-width:1px,stroke-dasharray:4 2;`);
-  lines.push(`  classDef entryBadge fill:#eef,stroke:#36f,stroke-width:2px;`);
+  lines.push(`  classDef visited fill:#c5e3d1,stroke:#27613f,stroke-width:2px;`);
+  lines.push(`  classDef devbox fill:#eec6bc,stroke:#7a2418,stroke-width:1.5px,stroke-dasharray:5 3;`);
+  lines.push(`  classDef entryBadge fill:#eeeada,stroke:#1c3b5a,stroke-width:2px;`);
   lines.push(`  class start entryBadge;`);
   const visitedList = [...visitedNodes].filter((n) => graph.nodes.some((gn) => gn.id === n));
   if (visitedList.length > 0) {
@@ -1220,20 +1454,18 @@ function writeReplayHtml(graph, events, mermaid, counts) {
     .map((e) => {
       const ts = e.ts?.split("T")[1]?.slice(0, 12) ?? "";
       if (e.type === "deviation") {
-        return `<tr class="dev"><td>${ts}</td><td><code>${escapeHtml(
+        return `<tr class="dev"><td>${ts}</td><td>${escapeHtml(
           e.from_node ?? "",
-        )}</code></td><td>❌ <code>${escapeHtml(
+        )}</td><td>✕ ${escapeHtml(
           e.attempted_tool ?? "",
-        )}</code></td><td>retry ${e.retry}/${e.retry_limit} — ${escapeHtml(
-          (e.reason ?? "").slice(0, 120),
-        )}…</td></tr>`;
+        )}</td><td>retry ${e.retry}/${e.retry_limit}</td></tr>`;
       }
       const arrow = e.transitioned
         ? `${escapeHtml(e.from_node)} → ${escapeHtml(e.to_node)}`
-        : `(stay in ${escapeHtml(e.from_node)})`;
-      return `<tr><td>${ts}</td><td><code>${escapeHtml(
+        : `— ${escapeHtml(e.from_node)}`;
+      return `<tr><td>${ts}</td><td>${escapeHtml(
         e.to_node ?? e.from_node ?? "",
-      )}</code></td><td>✓ <code>${escapeHtml(e.tool ?? "")}</code></td><td>${arrow}</td></tr>`;
+      )}</td><td>✓ ${escapeHtml(e.tool ?? "")}</td><td>${arrow}</td></tr>`;
     })
     .join("\n");
 
@@ -1242,38 +1474,30 @@ function writeReplayHtml(graph, events, mermaid, counts) {
 <head>
   <meta charset="utf-8">
   <title>BetterClaw — Run replay</title>
-  <style>
-    body { font: 14px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; padding: 2rem; background: #fafafa; color: #222; }
-    h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
-    .sub { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
-    .summary { background: #fff; border: 1px solid #ddd; padding: 0.9rem 1.1rem; margin: 0 0 1.5rem; border-radius: 4px; display: flex; gap: 2rem; align-items: center; }
-    .chip { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.85rem; font-weight: 600; }
-    .chip.allow { background: #cfe7c7; color: #1a5c1a; }
-    .chip.dev { background: #fde0e0; color: #8a0000; }
-    .layout { display: grid; grid-template-columns: 1.3fr 1fr; gap: 1.5rem; }
-    .mermaid { background: #fff; border: 1px solid #ddd; padding: 1.5rem; border-radius: 4px; overflow: auto; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; }
-    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.85rem; vertical-align: top; }
-    th { background: #f5f5f5; font-weight: 600; color: #444; }
-    tr.dev td { background: #fff7f7; }
-    code { background: #f0f0f0; padding: 0 0.25em; border-radius: 3px; font-family: ui-monospace, monospace; }
-    .meta { color: #666; font-size: 0.85rem; margin-top: 1.5rem; text-align: center; }
-  </style>
+  <style>${SHARED_CSS}</style>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
-  <h1>BetterClaw — Run replay</h1>
-  <p class="sub">Green = visited node · bold edge = traversed · dashed red = attempted deviation.</p>
+  <p class="kicker">BetterClaw · Run replay</p>
+  <h1 class="page-title">What the agent did</h1>
+  <p class="label" style="margin: 0 0 1.25rem;">Post-hoc render of a completed agent turn</p>
+  <hr class="rule"/>
 
   <div class="summary">
     <span class="chip allow">${counts.allowCount} allowed</span>
-    <span class="chip dev">${counts.deviationCount} deviation${counts.deviationCount === 1 ? "" : "s"}</span>
-    <span style="color:#666;">entry: <code>${escapeHtml(graph.entry)}</code> · ${graph.nodes.length} nodes · ${graph.edges.length} edges</span>
+    <span class="chip deny">${counts.deviationCount} deviation${counts.deviationCount === 1 ? "" : "s"}</span>
+    <span class="meta">entry ${escapeHtml(graph.entry)} · ${graph.nodes.length} nodes · ${graph.edges.length} edges · vertical ${escapeHtml(graph.vertical || "email")}</span>
   </div>
 
   <div class="layout">
-    <pre class="mermaid">${mermaid}</pre>
     <div>
+      <h2 class="section">Workflow graph</h2>
+      <p class="label" style="margin-bottom:0.5rem;">Green = visited · bold edge = traversed · dashed rust = deviation attempt</p>
+      <div class="mermaid-wrap"><pre class="mermaid">${mermaid}</pre></div>
+    </div>
+    <div>
+      <h2 class="section">Timeline</h2>
+      <p class="label" style="margin-bottom:0.5rem;">Chronological trace</p>
       <table>
         <thead><tr><th>time</th><th>node</th><th>tool</th><th>detail</th></tr></thead>
         <tbody>
@@ -1283,10 +1507,11 @@ ${timelineRows}
     </div>
   </div>
 
-  <p class="meta">Generated ${new Date().toISOString()}</p>
+  <p class="footer">generated ${new Date().toISOString()}</p>
 
   <script>
-    mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { useMaxWidth: false, curve: "basis" } });
+    ${MERMAID_INIT_JS}
+    mermaid.run();
   </script>
 </body>
 </html>`;
@@ -1452,34 +1677,44 @@ function buildMermaid(graph) {
 
 function writeHtml(graph, paragraph, mermaid) {
   const outPath = path.join(os.tmpdir(), `betterclaw-graph-${Date.now()}.html`);
+  const approvals = (graph.requires_approval ?? []).map((t) => `<span class="mono">${escapeHtml(t)}</span>`).join(", ") || "(none)";
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <title>BetterClaw — Workflow preview</title>
-  <style>
-    body { font: 14px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; padding: 2rem; background: #fafafa; color: #222; }
-    h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
-    .sub { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
-    .paragraph { background: #fff; border: 1px solid #ddd; border-left: 4px solid #36f; padding: 0.9rem 1.1rem; margin: 0 0 1.5rem; border-radius: 4px; white-space: pre-wrap; }
-    .mermaid { background: #fff; border: 1px solid #ddd; padding: 1.5rem; border-radius: 4px; overflow: auto; }
-    .meta { color: #666; font-size: 0.85rem; margin-top: 1.5rem; text-align: center; }
-    kbd { background: #eee; border-radius: 3px; padding: 0 0.35em; font-family: ui-monospace, monospace; border: 1px solid #ccc; }
+  <style>${SHARED_CSS}
+    .approve-instructions { margin-top: 1.5rem; font-size: 13px; color: var(--ink-soft); }
+    kbd { background: var(--paper-edge); border: 1px solid var(--hairline); border-bottom-width: 2px; padding: 1px 6px; border-radius: 2px; font: 12px/1 ui-monospace, Menlo, monospace; }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
-  <h1>BetterClaw — Workflow preview</h1>
-  <p class="sub">This is how your paragraph was compiled. Review the nodes, edges, and allowed tools — if anything is wrong, close this tab, answer <kbd>n</kbd> in the terminal, and re-run with a clearer paragraph.</p>
+  <p class="kicker">BetterClaw · Workflow preview</p>
+  <h1 class="page-title">How your paragraph compiled <em>(${escapeHtml(graph.vertical || "email")})</em></h1>
+  <p class="label" style="margin: 0 0 1.25rem;">Review the nodes and the allowed tools. If anything's wrong, close this tab and answer <kbd>n</kbd> in the terminal.</p>
+  <hr class="rule"/>
 
-  <div class="paragraph">${escapeHtml(paragraph)}</div>
+  <div class="paragraph-quote">${escapeHtml(paragraph)}</div>
 
-  <pre class="mermaid">${mermaid}</pre>
+  <h2 class="section">Compiled graph</h2>
+  <p class="label" style="margin-bottom:0.5rem;">Nodes, transitions, per-node allowed tools</p>
+  <div class="mermaid-wrap"><pre class="mermaid">${mermaid}</pre></div>
 
-  <p class="meta">Graph: ${graph.nodes.length} nodes · ${graph.edges.length} edges · entry = <code>${escapeHtml(graph.entry)}</code> · max retries = ${graph.max_reconsider_retries ?? 3}</p>
+  <div class="summary" style="margin-top: 1.5rem;">
+    <span class="chip">${graph.nodes.length} nodes</span>
+    <span class="chip">${graph.edges.length} edges</span>
+    <span class="chip">entry · <span class="mono" style="text-transform:none;">${escapeHtml(graph.entry)}</span></span>
+    <span class="chip">retries · ${graph.max_reconsider_retries ?? 3}</span>
+    <span class="chip ${(graph.requires_approval ?? []).length > 0 ? "pending" : ""}">approvals · ${approvals}</span>
+  </div>
+
+  <p class="approve-instructions">Approve in the terminal with <kbd>y</kbd> to write this graph as active.</p>
+  <p class="footer">compiled ${new Date().toISOString()}</p>
 
   <script>
-    mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { useMaxWidth: false, curve: "basis" } });
+    ${MERMAID_INIT_JS}
+    mermaid.run();
   </script>
 </body>
 </html>`;
