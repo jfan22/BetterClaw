@@ -1,0 +1,7 @@
+{
+  "name": "email-triage",
+  "vertical": "email",
+  "description": "Inbox triage with approval gate on drafts. Reads inbox, classifies each email, drafts replies for customer questions (you approve each one).",
+  "example_agent_message": "Triage my inbox. Search in:inbox maxResults=5, then for each read it and decide: newsletter (skip), investor (flag), or customer question (draft reply).",
+  "requires": ["Gmail vertical setup — see QUICKSTART.md §3"]
+}

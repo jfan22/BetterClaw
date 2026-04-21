@@ -23,6 +23,7 @@ const PARAGRAPH_PATH = path.join(PLUGIN_ROOT, "active-paragraph.md");
 const RUN_LOG_PATH = path.join(PLUGIN_ROOT, "run.jsonl");
 const APPROVALS_DIR = path.join(PLUGIN_ROOT, "approvals");
 const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
+const PRESETS_DIR = path.resolve(__dirname, "..", "presets");
 
 // Shared design language for every HTML output. Editorial / auditor's journal:
 // warm paper, ink, restrained palette, serif headers, mono for tool names and
@@ -391,6 +392,16 @@ if (args[0] === "doctor") {
   process.exit(0);
 }
 
+if (args[0] === "presets") {
+  const sub = args[1];
+  if (!sub) {
+    listPresets();
+  } else {
+    installPreset(sub);
+  }
+  process.exit(0);
+}
+
 if (args[0] === "save") {
   if (!args[1]) {
     console.error("Usage: betterclaw save <name>");
@@ -482,6 +493,91 @@ console.log(
 );
 
 // ---- helpers ----
+
+// ---- presets ----
+
+function listPresets() {
+  if (!fs.existsSync(PRESETS_DIR)) {
+    console.log(`No presets directory at ${PRESETS_DIR}`);
+    return;
+  }
+  const entries = fs
+    .readdirSync(PRESETS_DIR)
+    .filter((e) => {
+      const metaPath = path.join(PRESETS_DIR, e, "meta.json");
+      return fs.existsSync(metaPath);
+    })
+    .sort();
+
+  if (entries.length === 0) {
+    console.log(`No presets found in ${PRESETS_DIR}`);
+    return;
+  }
+
+  const metas = entries.map((name) => {
+    const meta = JSON.parse(fs.readFileSync(path.join(PRESETS_DIR, name, "meta.json"), "utf8"));
+    return { name, ...meta };
+  });
+
+  console.log(`Presets shipping with BetterClaw (${PRESETS_DIR}):\n`);
+  const nameW = Math.max(4, ...metas.map((m) => m.name.length));
+  const vW = Math.max(8, ...metas.map((m) => (m.vertical || "").length));
+  for (const m of metas) {
+    console.log(`  ${m.name.padEnd(nameW)}  ${(m.vertical || "").padEnd(vW)}  ${m.description}`);
+    if (m.requires && m.requires.length > 0) {
+      console.log(`  ${" ".repeat(nameW)}  ${" ".repeat(vW)}  requires: ${m.requires.join(", ")}`);
+    }
+    console.log("");
+  }
+  console.log(`Install one as the active graph: betterclaw presets <name>`);
+}
+
+function installPreset(name) {
+  validateLibraryName(name);
+  const srcDir = path.join(PRESETS_DIR, name);
+  const graphPath = path.join(srcDir, "graph.json");
+  if (!fs.existsSync(graphPath)) {
+    console.error(`error: no preset named "${name}"`);
+    console.error(`       Run \`betterclaw presets\` to see what's available.`);
+    process.exit(1);
+  }
+
+  // Copy into the user library so it's available via `betterclaw load <name>`
+  // later and shows up in `betterclaw list`.
+  const libDir = libraryEntryDir(name);
+  fs.mkdirSync(libDir, { recursive: true });
+  fs.copyFileSync(graphPath, path.join(libDir, "graph.json"));
+
+  const paraSrc = path.join(srcDir, "paragraph.md");
+  if (fs.existsSync(paraSrc)) fs.copyFileSync(paraSrc, path.join(libDir, "paragraph.md"));
+
+  const srcMeta = JSON.parse(fs.readFileSync(path.join(srcDir, "meta.json"), "utf8"));
+  const graph = JSON.parse(fs.readFileSync(graphPath, "utf8"));
+  const meta = {
+    name,
+    saved_at: new Date().toISOString(),
+    source: "preset",
+    description: srcMeta.description,
+    vertical: graph.vertical,
+    nodes: graph.nodes.length,
+    edges: graph.edges.length,
+    entry: graph.entry,
+    requires_approval: graph.requires_approval ?? [],
+  };
+  fs.writeFileSync(path.join(libDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
+
+  // And load it as the active graph, same as `betterclaw load <name>`.
+  fs.copyFileSync(graphPath, GRAPH_PATH);
+  if (fs.existsSync(paraSrc)) fs.copyFileSync(paraSrc, PARAGRAPH_PATH);
+
+  console.log(`Installed preset "${name}" (${graph.vertical}).`);
+  console.log(`  ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
+  if (meta.requires_approval.length > 0) {
+    console.log(`  approval required for: ${meta.requires_approval.join(", ")}`);
+  }
+  console.log(`\nLoaded as active graph. Try it:`);
+  console.log(`  openclaw agent --local --agent main -m "${srcMeta.example_agent_message || "<your task>"}"`);
+}
 
 function runDoctor() {
   const checks = [];
@@ -606,6 +702,8 @@ USAGE
   betterclaw deny <id>           Deny a pending request
 
 Library / marketplace:
+  betterclaw presets             List bundled preset workflows (one per vertical)
+  betterclaw presets <name>      Install a preset as the active graph
   betterclaw save <name>         Snapshot the active graph into ~/.betterclaw/library
   betterclaw load <name>         Load a saved graph as the active graph
   betterclaw list                Show saved graphs

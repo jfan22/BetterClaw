@@ -67,7 +67,22 @@ npx @gongrzhe/server-gmail-autoauth-mcp auth
 
 Browser opens, click through consent (you'll see "Google hasn't verified this app" — expected; click Advanced → proceed). Credentials land at `~/.gmail-mcp/credentials.json`.
 
-## 4. Compile your first workflow
+## 4. Pick a preset (fastest) or compile your own
+
+### Preset route — zero setup (shopping/sales/travel) or Gmail setup (email)
+
+```bash
+# See what's bundled
+betterclaw presets
+
+# Install one — copies into your library AND loads as the active graph
+betterclaw presets shopping-compare     # no setup, works immediately
+betterclaw presets sales-prospect        # no setup, stub leads
+betterclaw presets travel-cheapest-flight   # no setup, stub flights
+betterclaw presets email-triage          # needs step 3 above
+```
+
+### Compile route — your own paragraph
 
 ```bash
 # Email triage with approval gate
@@ -83,11 +98,15 @@ betterclaw "book a trip from SFO to JFK — search flights under \$400, then com
 betterclaw "find 3 leads in logistics with signals of recent growth, draft personalized outreach, let me approve each draft"
 ```
 
-Each command opens a Mermaid diagram of the compiled graph in your browser. Review, answer `y` at the terminal prompt, then run the agent:
+Compiling opens a Mermaid diagram of the compiled graph in your browser. Review, answer `y` at the terminal prompt. Presets skip the review step because the graph is pre-baked.
+
+### Run the agent
 
 ```bash
 openclaw agent --local --agent main -m "<describe the task>"
 ```
+
+Each preset's `meta.json` has an `example_agent_message` you can paste verbatim — `betterclaw presets <name>` prints it for you.
 
 You'll see `[ALLOW]` and `[DEVIATION]` lines on stderr. If the graph includes `requires_approval`, the agent pauses — run `betterclaw pending` then `betterclaw approve <id>` to resume.
 

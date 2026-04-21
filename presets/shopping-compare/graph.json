@@ -1,0 +1,29 @@
+{
+  "vertical": "shopping",
+  "entry": "search_products",
+  "max_reconsider_retries": 3,
+  "requires_approval": [],
+  "nodes": [
+    {
+      "id": "search_products",
+      "purpose": "Search the product catalog for candidates that match the user's query + optional price cap.",
+      "allowed_tools": ["shop_search"]
+    },
+    {
+      "id": "inspect_candidates",
+      "purpose": "Fetch the full details (description, rating, category) for 2-3 top candidates.",
+      "allowed_tools": ["shop_details"]
+    },
+    {
+      "id": "compare_options",
+      "purpose": "Side-by-side comparison of two finalists. Returns a delta on price, rating, and category.",
+      "allowed_tools": ["shop_compare"]
+    }
+  ],
+  "edges": [
+    { "from": "search_products",    "to": "inspect_candidates" },
+    { "from": "inspect_candidates", "to": "compare_options" },
+    { "from": "inspect_candidates", "to": "search_products" },
+    { "from": "compare_options",    "to": "search_products" }
+  ]
+}

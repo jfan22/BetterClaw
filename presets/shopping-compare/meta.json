@@ -1,0 +1,7 @@
+{
+  "name": "shopping-compare",
+  "vertical": "shopping",
+  "description": "Search → inspect → compare flow. No approval gates — the agent runs freely within the workflow. Great for a no-setup demo because the shopping catalog is embedded in the plugin.",
+  "example_agent_message": "Find me a good wireless mouse under $50. Search the catalog, inspect the top two, compare them, recommend one.",
+  "requires": []
+}

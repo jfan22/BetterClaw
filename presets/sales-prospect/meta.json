@@ -1,0 +1,7 @@
+{
+  "name": "sales-prospect",
+  "vertical": "sales",
+  "description": "Lead prospecting with approval gate on outreach drafts. Find → enrich → draft with personalized signal reference. Approval pauses the agent before each draft is created.",
+  "example_agent_message": "Find 2 leads in Logistics. Enrich each. Draft outreach for the first one — reference their signal.",
+  "requires": []
+}

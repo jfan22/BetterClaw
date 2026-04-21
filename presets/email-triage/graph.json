@@ -1,0 +1,29 @@
+{
+  "vertical": "email",
+  "entry": "list_inbox",
+  "max_reconsider_retries": 3,
+  "requires_approval": ["gmail_draft"],
+  "nodes": [
+    {
+      "id": "list_inbox",
+      "purpose": "List recent emails in the inbox to triage.",
+      "allowed_tools": ["gmail_search"]
+    },
+    {
+      "id": "classify_email",
+      "purpose": "Read each candidate email to classify it as investor, customer question, newsletter, or other.",
+      "allowed_tools": ["gmail_read"]
+    },
+    {
+      "id": "draft_customer_reply",
+      "purpose": "Draft a reply for customer questions. Never sends. Requires your approval before creation.",
+      "allowed_tools": ["gmail_draft"]
+    }
+  ],
+  "edges": [
+    { "from": "list_inbox",            "to": "classify_email" },
+    { "from": "classify_email",        "to": "draft_customer_reply" },
+    { "from": "classify_email",        "to": "list_inbox" },
+    { "from": "draft_customer_reply",  "to": "list_inbox" }
+  ]
+}

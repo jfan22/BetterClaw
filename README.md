@@ -148,6 +148,8 @@ betterclaw approve <id>        # approve
 betterclaw deny <id>           # deny
 
 # Library / marketplace
+betterclaw presets             # list bundled presets (one per vertical, ready to use)
+betterclaw presets <name>      # install + activate a preset in one command
 betterclaw save <name>         # snapshot active graph into ~/.betterclaw/library
 betterclaw load <name>         # load a saved graph as active
 betterclaw list                # show saved graphs (name, nodes/edges, approvals count, saved timestamp)

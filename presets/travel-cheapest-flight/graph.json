@@ -1,0 +1,22 @@
+{
+  "vertical": "travel",
+  "entry": "search_flights",
+  "max_reconsider_retries": 3,
+  "requires_approval": [],
+  "nodes": [
+    {
+      "id": "search_flights",
+      "purpose": "Search flights between two airports (IATA codes), optionally constrained by max price.",
+      "allowed_tools": ["travel_search_flights"]
+    },
+    {
+      "id": "compare_cheapest",
+      "purpose": "Side-by-side comparison of two flight candidates — returns price and duration deltas.",
+      "allowed_tools": ["travel_compare_flights"]
+    }
+  ],
+  "edges": [
+    { "from": "search_flights",   "to": "compare_cheapest" },
+    { "from": "compare_cheapest", "to": "search_flights" }
+  ]
+}
