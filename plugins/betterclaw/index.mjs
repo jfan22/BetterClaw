@@ -34,6 +34,19 @@ let workflowState = null;
 let runLogger = { append: () => {} };
 let activeVerticalId = "email";
 
+// Dedupe key: toolName + canonical JSON of params. When Claude CLI's
+// per-tool-call timeout fires during a long approval wait, it retries the
+// same tool call. Without dedupe, each retry creates a fresh approval id and
+// the pending queue piles up with duplicates. With dedupe, retries await
+// the same in-flight approval. Map<hash, Promise<"approved"|"denied">>.
+const approvalPromiseByHash = new Map();
+function hashToolCall(toolName, params) {
+  // Stable JSON — the hook sees params unchanged so key-order drift isn't a
+  // concern in practice, but JSON.stringify with sorted keys gives us
+  // correctness regardless.
+  return toolName + ":" + JSON.stringify(params ?? {}, Object.keys(params ?? {}).sort());
+}
+
 function wrapExecuteWithHook(toolName, realExecute) {
   return async (toolCallId, params, signal, onUpdate) => {
     const runner = getGlobalHookRunner();
@@ -130,34 +143,52 @@ export default definePluginEntry({
         : false;
 
       if (requiresApproval) {
-        const id = crypto.randomUUID().slice(0, 8);
-        runLogger.append({
-          ts,
-          type: "approval_pending",
-          id,
-          node: workflowState.currentNode,
-          tool: stripped,
-          params: event.params ?? {},
-        });
-        process.stderr.write(
-          `[APPROVAL] ${ts} id=${id} node=${workflowState.currentNode} tool=${stripped} — waiting for decision…\n` +
-            `[APPROVAL]   run: betterclaw approve ${id}   or   betterclaw deny ${id}\n`,
-        );
-        const decision = await waitForApproval(approvalsDir, id, 0);
-        const endTs = new Date().toISOString();
-        for (const suffix of ["approved", "denied"]) {
-          try { fs.unlinkSync(path.join(approvalsDir, `${id}.${suffix}`)); } catch {}
+        // Dedupe: if this exact tool+params is already in flight, await that
+        // same promise instead of creating a new approval id. Fixes the
+        // "claude CLI retries → pile of duplicate pending approvals" bug.
+        const hash = hashToolCall(stripped, event.params ?? {});
+        let inflight = approvalPromiseByHash.get(hash);
+        if (!inflight) {
+          const id = crypto.randomUUID().slice(0, 8);
+          runLogger.append({
+            ts,
+            type: "approval_pending",
+            id,
+            node: workflowState.currentNode,
+            tool: stripped,
+            params: event.params ?? {},
+          });
+          process.stderr.write(
+            `[APPROVAL] ${ts} id=${id} node=${workflowState.currentNode} tool=${stripped} — waiting for decision…\n` +
+              `[APPROVAL]   run: betterclaw approve ${id}   or   betterclaw deny ${id}\n`,
+          );
+          const promise = (async () => {
+            const decision = await waitForApproval(approvalsDir, id, 0);
+            const endTs = new Date().toISOString();
+            for (const suffix of ["approved", "denied"]) {
+              try { fs.unlinkSync(path.join(approvalsDir, `${id}.${suffix}`)); } catch {}
+            }
+            process.stderr.write(
+              `[APPROVAL] ${endTs} id=${id} → ${decision === "approved" ? "APPROVED" : "DENIED"}\n`,
+            );
+            runLogger.append({ ts: endTs, type: "approval_resolved", id, decision });
+            approvalPromiseByHash.delete(hash);
+            return decision;
+          })();
+          inflight = { id, promise };
+          approvalPromiseByHash.set(hash, inflight);
+        } else {
+          process.stderr.write(
+            `[APPROVAL] ${ts} duplicate tool call — awaiting existing id=${inflight.id} (claude-cli retry?)\n`,
+          );
         }
+        const decision = await inflight.promise;
         if (decision === "denied") {
-          process.stderr.write(`[APPROVAL] ${endTs} id=${id} → DENIED\n`);
-          runLogger.append({ ts: endTs, type: "approval_resolved", id, decision: "denied" });
           return {
             block: true,
             blockReason: `User denied approval for '${stripped}' at node '${workflowState.currentNode}'.`,
           };
         }
-        process.stderr.write(`[APPROVAL] ${endTs} id=${id} → APPROVED\n`);
-        runLogger.append({ ts: endTs, type: "approval_resolved", id, decision: "approved" });
       }
 
       process.stderr.write(
