@@ -25,6 +25,52 @@ const APPROVALS_DIR = path.join(PLUGIN_ROOT, "approvals");
 const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
 const PRESETS_DIR = path.resolve(__dirname, "..", "presets");
 
+// Terminal styling. Matches the HTML design language: dim for secondary,
+// green=allow, red=deny, yellow=pending, cyan=accent/meta, bold for command
+// names and page titles. Respects NO_COLOR and non-TTY (pipes get plain text).
+const ANSI = {
+  reset:   "\x1b[0m",
+  bold:    "\x1b[1m",
+  dim:     "\x1b[2m",
+  italic:  "\x1b[3m",
+  ink:     "\x1b[0m",
+  dimgray: "\x1b[90m",
+  accent:  "\x1b[36m",
+  allow:   "\x1b[32m",
+  deny:    "\x1b[31m",
+  pending: "\x1b[33m",
+};
+const NO_COLOR = !process.stdout.isTTY || process.env.NO_COLOR;
+const wrap = (code) => (text) => (NO_COLOR ? text : `${code}${text}${ANSI.reset}`);
+const bold    = wrap(ANSI.bold);
+const dim     = wrap(ANSI.dim);
+const italic  = wrap(ANSI.italic);
+const accent  = wrap(ANSI.accent);
+const allow   = wrap(ANSI.allow);
+const deny    = wrap(ANSI.deny);
+const pending = wrap(ANSI.pending);
+const gray    = wrap(ANSI.dimgray);
+
+const ui = {
+  // Small-caps-like kicker (dim uppercase) — matches HTML kicker line.
+  kicker(text) { return dim(text.toUpperCase()); },
+  // Big title: bold.
+  title(text) { return bold(text); },
+  // Section label: dim uppercase with a bit of space before it.
+  section(text) { return "\n" + dim(text.toUpperCase()); },
+  // Subtle hairline rule.
+  hr(width = 56) { return dim("─".repeat(width)); },
+  // Inline chip in [brackets] with optional color.
+  chip(text, color) {
+    const label = `[${text}]`;
+    if (color === "allow")   return allow(label);
+    if (color === "deny")    return deny(label);
+    if (color === "pending") return pending(label);
+    if (color === "accent")  return accent(label);
+    return dim(label);
+  },
+};
+
 // Shared design language for every HTML output. Editorial / auditor's journal:
 // warm paper, ink, restrained palette, serif headers, mono for tool names and
 // IDs. Hard edges, no fuzzy SaaS rounded-corners. The conceptual metaphor is
@@ -340,9 +386,9 @@ if (args[0] === "--version" || args[0] === "-v") {
   const pkgPath = path.resolve(__dirname, "..", "package.json");
   try {
     const v = JSON.parse(fs.readFileSync(pkgPath, "utf8")).version;
-    console.log(`betterclaw ${v}`);
+    console.log(`${bold("betterclaw")} ${accent(v)}`);
   } catch {
-    console.log(`betterclaw (version unknown)`);
+    console.log(`${bold("betterclaw")} ${dim("(version unknown)")}`);
   }
   process.exit(0);
 }
@@ -461,23 +507,33 @@ if (!paragraph) {
 
 preflightCheck();
 
+console.log();
+console.log("  " + ui.kicker("BetterClaw · Compile"));
+console.log("  " + ui.hr());
+
 const verticalId = detectVertical(paragraph);
-console.log(`Detected vertical: ${verticalId}`);
+console.log(`  ${dim("vertical")}       ${ui.chip(verticalId, "accent")}`);
+console.log(`  ${dim("compiling via")}  ${accent("claude -p")} ${gray("(model=opus)")}`);
 const prompt = buildCompilePrompt(paragraph, verticalId);
 const graph = compileWithClaude(prompt);
-if (!graph.vertical) graph.vertical = verticalId; // belt + suspenders
+if (!graph.vertical) graph.vertical = verticalId;
 validateGraph(graph);
 
-console.log(`\nCompiled workflow graph:`);
-console.log(`  vertical: ${graph.vertical}`);
-console.log(`  entry: ${graph.entry}`);
-console.log(`  nodes: ${graph.nodes.length} (${graph.nodes.map((n) => n.id).join(", ")})`);
-console.log(`  edges: ${graph.edges.length}`);
-console.log(`  max_reconsider_retries: ${graph.max_reconsider_retries ?? 3}`);
 const approvals = Array.isArray(graph.requires_approval) ? graph.requires_approval : [];
+console.log();
+console.log("  " + bold("Compiled graph"));
+console.log(`  ${dim("entry           ")} ${graph.entry}`);
+console.log(`  ${dim("nodes           ")} ${graph.nodes.length}  ${gray("(" + graph.nodes.map((n) => n.id).join(", ") + ")")}`);
+console.log(`  ${dim("edges           ")} ${graph.edges.length}`);
+console.log(`  ${dim("max retries     ")} ${graph.max_reconsider_retries ?? 3}`);
 console.log(
-  `  requires_approval: ${approvals.length > 0 ? approvals.join(", ") : "(none — all tool calls autorun)"}`,
+  `  ${dim("requires approval")} ${
+    approvals.length > 0
+      ? approvals.map((t) => ui.chip(t, "pending")).join(" ")
+      : gray("none — all tool calls autorun")
+  }`,
 );
+console.log();
 
 const approved = await renderAndConfirm(graph, paragraph);
 if (!approved) {
@@ -487,49 +543,54 @@ if (!approved) {
 
 fs.writeFileSync(GRAPH_PATH, JSON.stringify(graph, null, 2) + "\n");
 fs.writeFileSync(PARAGRAPH_PATH, paragraph + "\n");
-console.log(`\nWritten to: ${GRAPH_PATH}`);
-console.log(
-  `\nNext: run \`openclaw agent --local --agent main -m "<your task>"\` — the plugin will load the new graph on the next agent turn.`,
-);
+console.log(`  ${allow("✓")}  Written to ${gray(GRAPH_PATH)}`);
+console.log();
+console.log("  " + dim("Next:"));
+console.log("    " + accent(`openclaw agent --local --agent main -m "<your task>"`));
+console.log("  " + dim("The plugin picks up the new graph on the next agent turn."));
+console.log();
 
 // ---- helpers ----
 
 // ---- presets ----
 
 function listPresets() {
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Presets"));
+  console.log("  " + ui.hr());
+
   if (!fs.existsSync(PRESETS_DIR)) {
-    console.log(`No presets directory at ${PRESETS_DIR}`);
+    console.log("  " + dim(`No presets directory at ${PRESETS_DIR}`));
+    console.log();
     return;
   }
   const entries = fs
     .readdirSync(PRESETS_DIR)
-    .filter((e) => {
-      const metaPath = path.join(PRESETS_DIR, e, "meta.json");
-      return fs.existsSync(metaPath);
-    })
+    .filter((e) => fs.existsSync(path.join(PRESETS_DIR, e, "meta.json")))
     .sort();
 
   if (entries.length === 0) {
-    console.log(`No presets found in ${PRESETS_DIR}`);
+    console.log("  " + dim(`No presets found in ${PRESETS_DIR}`));
+    console.log();
     return;
   }
 
-  const metas = entries.map((name) => {
-    const meta = JSON.parse(fs.readFileSync(path.join(PRESETS_DIR, name, "meta.json"), "utf8"));
-    return { name, ...meta };
-  });
-
-  console.log(`Presets shipping with BetterClaw (${PRESETS_DIR}):\n`);
+  const metas = entries.map((name) => ({
+    name,
+    ...JSON.parse(fs.readFileSync(path.join(PRESETS_DIR, name, "meta.json"), "utf8")),
+  }));
   const nameW = Math.max(4, ...metas.map((m) => m.name.length));
-  const vW = Math.max(8, ...metas.map((m) => (m.vertical || "").length));
   for (const m of metas) {
-    console.log(`  ${m.name.padEnd(nameW)}  ${(m.vertical || "").padEnd(vW)}  ${m.description}`);
+    console.log("  " + bold(m.name.padEnd(nameW)) + "  " + gray((m.vertical || "").padEnd(10)) + "  " + m.description);
     if (m.requires && m.requires.length > 0) {
-      console.log(`  ${" ".repeat(nameW)}  ${" ".repeat(vW)}  requires: ${m.requires.join(", ")}`);
+      console.log(
+        "  " + " ".repeat(nameW) + "  " + " ".repeat(10) + "  " + pending("requires:") + " " + gray(m.requires.join(", ")),
+      );
     }
-    console.log("");
   }
-  console.log(`Install one as the active graph: betterclaw presets <name>`);
+  console.log();
+  console.log("  " + dim("Install: ") + accent("betterclaw presets <name>"));
+  console.log();
 }
 
 function installPreset(name) {
@@ -570,13 +631,16 @@ function installPreset(name) {
   fs.copyFileSync(graphPath, GRAPH_PATH);
   if (fs.existsSync(paraSrc)) fs.copyFileSync(paraSrc, PARAGRAPH_PATH);
 
-  console.log(`Installed preset "${name}" (${graph.vertical}).`);
-  console.log(`  ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
+  console.log();
+  console.log(`  ${allow("✓")} ${bold("Installed preset")} ${accent(name)}  ${ui.chip(graph.vertical, "accent")}`);
+  console.log(`    ${dim("summary:")} ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
   if (meta.requires_approval.length > 0) {
-    console.log(`  approval required for: ${meta.requires_approval.join(", ")}`);
+    console.log(`    ${dim("approvals:")} ${meta.requires_approval.map((t) => ui.chip(t, "pending")).join(" ")}`);
   }
-  console.log(`\nLoaded as active graph. Try it:`);
-  console.log(`  openclaw agent --local --agent main -m "${srcMeta.example_agent_message || "<your task>"}"`);
+  console.log();
+  console.log("  " + dim("Try it:"));
+  console.log("    " + accent(`openclaw agent --local --agent main -m "${srcMeta.example_agent_message || "<your task>"}"`));
+  console.log();
 }
 
 function runDoctor() {
@@ -669,77 +733,73 @@ function runDoctor() {
     });
   }
 
-  // Report
   const pad = Math.max(...checks.map((c) => c.name.length));
   let allGreen = true;
-  for (const c of checks) {
-    const mark = c.ok ? "✓" : c.optional ? "·" : "✗";
-    if (!c.ok && !c.optional) allGreen = false;
-    console.log(`${mark} ${c.name.padEnd(pad)}  ${c.detail}`);
-    if (!c.ok) console.log(`    fix: ${c.fix}`);
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Doctor"));
+  console.log("  " + ui.hr());
+  for (const check of checks) {
+    let mark, colored;
+    if (check.ok) {
+      mark = allow("✓");
+      colored = check.name;
+    } else if (check.optional) {
+      mark = dim("·");
+      colored = dim(check.name);
+    } else {
+      mark = deny("✗");
+      colored = check.name;
+      allGreen = false;
+    }
+    console.log(`  ${mark}  ${colored.padEnd(pad + (NO_COLOR ? 0 : 10))}  ${gray(check.detail)}`);
+    if (!check.ok) console.log(`     ${dim("fix:")} ${accent(check.fix)}`);
   }
-
-  console.log("");
+  console.log();
   if (allGreen) {
-    console.log("All checks passed.");
+    console.log("  " + allow("All checks passed."));
   } else {
-    console.log("Some required checks failed. See `fix:` hints above.");
+    console.log("  " + deny("Some required checks failed.") + dim(" See `fix:` hints above."));
+    console.log();
     process.exit(1);
   }
+  console.log();
 }
 
 function printHelp() {
-  console.log(`
-betterclaw — compile + inspect workflow-enforced agents.
-
-USAGE
-  betterclaw "<paragraph>"       Compile a paragraph to active-graph.json
-  betterclaw view                Render a replay-diff of the last agent run
-  betterclaw view --watch        Live HTTP server + browser view with approval buttons
-  betterclaw pending             List in-flight approval requests
-  betterclaw doctor              Diagnose setup problems
-  betterclaw approve <id>        Approve a pending request
-  betterclaw deny <id>           Deny a pending request
-
-Library / marketplace:
-  betterclaw presets             List bundled preset workflows (one per vertical)
-  betterclaw presets <name>      Install a preset as the active graph
-  betterclaw save <name>         Snapshot the active graph into ~/.betterclaw/library
-  betterclaw load <name>         Load a saved graph as the active graph
-  betterclaw list                Show saved graphs
-  betterclaw fork <src> <name>   Fork a graph from a URL, gist:<id>, or local path
-  betterclaw diff <a> <b>        Side-by-side Mermaid diff of two graphs
-  betterclaw publish <name> --to gist   Publish via \`gh gist create\`
-
-Misc:
-  betterclaw --show              Print the currently-active graph
-  betterclaw --help              This message
-
-EXAMPLE
-  betterclaw "triage my inbox: draft replies for customer questions, let me approve each one"
-  openclaw agent --local --agent main -m "triage my inbox"
-  # agent pauses on gmail_draft → prints [APPROVAL] id=<x> → betterclaw approve <x>
-  betterclaw view                # replay the run
-
-OUTPUT
-  Writes the workflow graph to:
-  ${GRAPH_PATH}
-
-  The BetterClaw plugin picks up the new graph on the next agent turn
-  (the plugin VM is rebuilt per turn, so no restart needed).
-`);
-}
-
-function resolveApproval(id, decision) {
-  if (!/^[a-z0-9-]+$/i.test(id)) {
-    console.error(`error: invalid id ${id}`);
-    process.exit(1);
-  }
-  fs.mkdirSync(APPROVALS_DIR, { recursive: true });
-  const filename = decision === "approve" ? `${id}.approved` : `${id}.denied`;
-  const target = path.join(APPROVALS_DIR, filename);
-  fs.writeFileSync(target, String(Date.now()));
-  console.log(`${decision === "approve" ? "Approved" : "Denied"} ${id}. Agent will resume shortly.`);
+  const cmd = (name) => "  " + bold(name);
+  const desc = (text) => "  " + text;
+  const pair = (name, text) => `  ${bold(name.padEnd(32))} ${gray(text)}`;
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw"));
+  console.log("  " + bold("Compile + inspect workflow-enforced agents"));
+  console.log("  " + ui.hr());
+  console.log(ui.section("  Run"));
+  console.log(pair(`betterclaw "<paragraph>"`,       `Compile a paragraph to active-graph.json`));
+  console.log(pair(`betterclaw view`,                `Render a replay-diff of the last agent run`));
+  console.log(pair(`betterclaw view --watch`,        `Live HTTP server + browser view (approve / deny buttons)`));
+  console.log(pair(`betterclaw pending`,             `List in-flight approval requests`));
+  console.log(pair(`betterclaw approve <id>`,        `Approve a pending request`));
+  console.log(pair(`betterclaw deny <id>`,           `Deny a pending request`));
+  console.log(pair(`betterclaw doctor`,              `Diagnose setup problems`));
+  console.log(ui.section("  Library & marketplace"));
+  console.log(pair(`betterclaw presets`,             `List bundled preset workflows (one per vertical)`));
+  console.log(pair(`betterclaw presets <name>`,      `Install a preset as the active graph`));
+  console.log(pair(`betterclaw save <name>`,         `Snapshot the active graph into ~/.betterclaw/library`));
+  console.log(pair(`betterclaw load <name>`,         `Load a saved graph as the active graph`));
+  console.log(pair(`betterclaw list`,                `Show saved graphs`));
+  console.log(pair(`betterclaw fork <src> <name>`,   `Fork from a URL, gist:<id>, or local path`));
+  console.log(pair(`betterclaw diff <a> <b>`,        `Side-by-side diff of two graphs`));
+  console.log(pair(`betterclaw publish <name> --to gist`, `Publish via \`gh gist create\``));
+  console.log(ui.section("  Misc"));
+  console.log(pair(`betterclaw --show`,              `Print the currently-active graph JSON`));
+  console.log(pair(`betterclaw --version`,           `Print version`));
+  console.log(pair(`betterclaw --help`,              `This message`));
+  console.log();
+  console.log("  " + ui.kicker("Quick start"));
+  console.log(desc(`Try the shopping preset (zero setup):`));
+  console.log(desc("    " + accent(`betterclaw presets shopping-compare`)));
+  console.log(desc("    " + accent(`openclaw agent --local --agent main -m "Find a good laptop under $1500, compare the top two"`)));
+  console.log();
 }
 
 // ---- library / marketplace ----
@@ -788,11 +848,13 @@ function saveToLibrary(name) {
     requires_approval: graph.requires_approval ?? [],
   };
   fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
-  console.log(`Saved to library: ${dir}`);
-  console.log(`  ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
+  console.log();
+  console.log(`  ${allow("✓")} ${bold("Saved to library")}  ${gray(dir)}`);
+  console.log(`    ${dim("summary:")} ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
   if (meta.requires_approval.length > 0) {
-    console.log(`  approval required for: ${meta.requires_approval.join(", ")}`);
+    console.log(`    ${dim("approvals:")} ${meta.requires_approval.map((t) => ui.chip(t, "pending")).join(" ")}`);
   }
+  console.log();
 }
 
 function loadFromLibrary(name) {
@@ -800,22 +862,32 @@ function loadFromLibrary(name) {
   const dir = libraryEntryDir(name);
   const graphPath = path.join(dir, "graph.json");
   if (!fs.existsSync(graphPath)) {
-    console.error(`error: library entry "${name}" not found at ${dir}`);
+    console.error("  " + deny("✗") + "  library entry " + bold(name) + " not found");
+    console.error("    " + gray(dir));
     process.exit(1);
   }
   fs.copyFileSync(graphPath, GRAPH_PATH);
   const paraPath = path.join(dir, "paragraph.md");
   if (fs.existsSync(paraPath)) fs.copyFileSync(paraPath, PARAGRAPH_PATH);
   const meta = JSON.parse(fs.readFileSync(path.join(dir, "meta.json"), "utf8"));
-  console.log(`Loaded "${name}" as active graph.`);
-  console.log(`  ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
-  if (meta.forked_from) console.log(`  forked from: ${meta.forked_from}`);
-  console.log(`\nNext: run \`openclaw agent --local --agent main -m "<task>"\`.`);
+  console.log();
+  console.log(`  ${allow("✓")} ${bold("Loaded")} ${accent(name)} ${dim("as active graph.")}`);
+  console.log(`    ${dim("summary:")} ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
+  if (meta.forked_from) console.log(`    ${dim("forked from:")} ${gray(meta.forked_from)}`);
+  console.log();
+  console.log("  " + dim("Next:"));
+  console.log("    " + accent(`openclaw agent --local --agent main -m "<task>"`));
+  console.log();
 }
 
 function listLibrary() {
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Library"));
+  console.log("  " + ui.hr());
   if (!fs.existsSync(LIBRARY_DIR)) {
-    console.log(`No saved graphs. Library dir: ${LIBRARY_DIR}`);
+    console.log("  " + dim("No saved graphs yet."));
+    console.log("  " + dim("Library dir: ") + gray(LIBRARY_DIR));
+    console.log();
     return;
   }
   const entries = fs
@@ -823,28 +895,42 @@ function listLibrary() {
     .filter((e) => fs.statSync(path.join(LIBRARY_DIR, e)).isDirectory())
     .sort();
   if (entries.length === 0) {
-    console.log(`No saved graphs. Library dir: ${LIBRARY_DIR}`);
+    console.log("  " + dim("No saved graphs yet."));
+    console.log("  " + dim("Try: ") + accent("betterclaw presets"));
+    console.log();
     return;
   }
   const rows = [];
   for (const name of entries) {
     const metaPath = path.join(LIBRARY_DIR, name, "meta.json");
     if (!fs.existsSync(metaPath)) continue;
-    const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
-    rows.push(meta);
+    rows.push(JSON.parse(fs.readFileSync(metaPath, "utf8")));
   }
-  console.log(`Library (${rows.length} saved graphs at ${LIBRARY_DIR}):\n`);
   const nameW = Math.max(4, ...rows.map((r) => r.name.length));
-  console.log(`  ${"name".padEnd(nameW)}  nodes  edges  approvals  saved`);
-  console.log(`  ${"-".repeat(nameW)}  -----  -----  ---------  ------------------------`);
+  console.log(
+    "  " +
+      dim("name".padEnd(nameW)) +
+      "  " + dim("vert".padEnd(8)) +
+      "  " + dim("nodes") +
+      "  " + dim("edges") +
+      "  " + dim("approve") +
+      "  " + dim("saved"),
+  );
   for (const r of rows) {
     const approvals = (r.requires_approval ?? []).length;
-    const saved = (r.saved_at || "").replace("T", " ").slice(0, 19);
+    const saved = (r.saved_at || "").replace("T", " ").slice(0, 16);
+    const approvalStr = approvals > 0 ? pending(String(approvals).padStart(7)) : gray("0".padStart(7));
     console.log(
-      `  ${r.name.padEnd(nameW)}  ${String(r.nodes).padStart(5)}  ` +
-        `${String(r.edges).padStart(5)}  ${String(approvals).padStart(9)}  ${saved}`,
+      "  " +
+        bold(r.name.padEnd(nameW)) +
+        "  " + gray((r.vertical || "email").padEnd(8)) +
+        "  " + String(r.nodes).padStart(5) +
+        "  " + String(r.edges).padStart(5) +
+        "  " + approvalStr +
+        "  " + gray(saved),
     );
   }
+  console.log();
 }
 
 async function forkFromUrl(source, newName) {
@@ -923,9 +1009,12 @@ async function forkFromUrl(source, newName) {
     requires_approval: graph.requires_approval ?? [],
   };
   fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
-  console.log(`Forked "${newName}" from ${originDescription}`);
-  console.log(`  ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
-  console.log(`  Load it: betterclaw load ${newName}`);
+  console.log();
+  console.log(`  ${allow("✓")} ${bold("Forked")} ${accent(newName)} ${dim("from")} ${gray(originDescription)}`);
+  console.log(`    ${dim("summary:")} ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
+  console.log();
+  console.log("  " + dim("Load it: ") + accent(`betterclaw load ${newName}`));
+  console.log();
 }
 
 function fetchUrl(url) {
@@ -953,8 +1042,10 @@ function diffGraphs(nameA, nameB) {
   const mermaidB = buildDiffMermaid(graphB, graphA, "right");
   const htmlPath = path.join(os.tmpdir(), `betterclaw-diff-${Date.now()}.html`);
   fs.writeFileSync(htmlPath, buildDiffHtml(nameA, nameB, graphA, graphB, mermaidA, mermaidB));
-  console.log(`Diff: ${nameA} ↔ ${nameB}`);
-  console.log(`Opening: ${htmlPath}`);
+  console.log();
+  console.log(`  ${bold("Diff:")} ${accent(nameA)} ${dim("↔")} ${accent(nameB)}`);
+  console.log(`  ${accent("→")} ${gray(htmlPath)}`);
+  console.log();
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
   spawn(opener, [htmlPath], { stdio: "ignore", detached: true }).unref();
 }
@@ -1124,35 +1215,56 @@ See \`paragraph.md\` in this gist.
 // ---- existing helpers below ----
 
 function listPending() {
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Pending approvals"));
+  console.log("  " + ui.hr());
   if (!fs.existsSync(RUN_LOG_PATH)) {
-    console.log("No active run.");
+    console.log("  " + dim("No active run."));
+    console.log();
     return;
   }
   const events = fs
     .readFileSync(RUN_LOG_PATH, "utf8")
     .split("\n")
     .filter((l) => l.trim())
-    .map((l) => {
-      try { return JSON.parse(l); } catch { return null; }
-    })
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
     .filter(Boolean);
-  const pending = new Map();
+  const pendingMap = new Map();
   for (const e of events) {
-    if (e.type === "approval_pending") pending.set(e.id, e);
-    if (e.type === "approval_resolved") pending.delete(e.id);
+    if (e.type === "approval_pending") pendingMap.set(e.id, e);
+    if (e.type === "approval_resolved") pendingMap.delete(e.id);
   }
-  if (pending.size === 0) {
-    console.log("No pending approvals.");
+  if (pendingMap.size === 0) {
+    console.log("  " + dim("No pending approvals."));
+    console.log();
     return;
   }
-  for (const [id, e] of pending) {
-    console.log(`  ${id}  node=${e.node}  tool=${e.tool}  ts=${e.ts}`);
+  for (const [id, e] of pendingMap) {
+    const ts = (e.ts || "").slice(11, 19);
+    console.log(`  ${ui.chip(id, "pending")}  ${bold(e.tool)}  ${dim("at node")} ${e.node}  ${gray(ts)}`);
     if (e.params && Object.keys(e.params).length > 0) {
       const preview = JSON.stringify(e.params).slice(0, 200);
-      console.log(`         params: ${preview}${preview.length >= 200 ? "…" : ""}`);
+      console.log(`    ${dim("params:")} ${gray(preview + (preview.length >= 200 ? "…" : ""))}`);
     }
   }
-  console.log(`\nResolve with: betterclaw approve <id>   or   betterclaw deny <id>`);
+  console.log();
+  console.log("  " + dim("Resolve: ") + accent("betterclaw approve <id>") + dim("  or  ") + accent("betterclaw deny <id>"));
+  console.log();
+}
+
+function resolveApproval(id, decision) {
+  if (!/^[a-z0-9-]+$/i.test(id)) {
+    console.error("  " + deny("✗") + "  invalid id " + gray(id));
+    process.exit(1);
+  }
+  fs.mkdirSync(APPROVALS_DIR, { recursive: true });
+  const filename = decision === "approve" ? `${id}.approved` : `${id}.denied`;
+  const target = path.join(APPROVALS_DIR, filename);
+  fs.writeFileSync(target, String(Date.now()));
+  const verb = decision === "approve" ? allow("Approved") : deny("Denied");
+  console.log();
+  console.log(`  ${verb} ${ui.chip(id)} ${dim("— agent will resume shortly.")}`);
+  console.log();
 }
 
 function viewLastRun() {
@@ -1197,8 +1309,10 @@ function viewLastRun() {
     allowCount: allowEvents.length,
     deviationCount: deviationEvents.length,
   });
-  console.log(`Run replay: ${allowEvents.length} allowed, ${deviationEvents.length} deviation(s).`);
-  console.log(`Opening replay HTML: ${htmlPath}`);
+  console.log();
+  console.log(`  ${bold("Replay")}  ${ui.chip(allowEvents.length + " allowed", "allow")} ${ui.chip(deviationEvents.length + " deviation" + (deviationEvents.length === 1 ? "" : "s"), deviationEvents.length > 0 ? "deny" : null)}`);
+  console.log(`  ${accent("→")} ${gray(htmlPath)}`);
+  console.log();
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
   spawn(opener, [htmlPath], { stdio: "ignore", detached: true }).unref();
 }
@@ -1250,14 +1364,20 @@ async function startWatchServer() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   const url = `http://127.0.0.1:${port}/`;
-  console.log(`BetterClaw live view: ${url}`);
-  console.log("Leave this running. In another terminal:");
-  console.log("  openclaw agent --local --agent main -m \"<your task>\"");
-  console.log("Ctrl+C here to stop.");
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Live view"));
+  console.log("  " + ui.hr());
+  console.log(`  ${bold("Serving at")} ${accent(url)}`);
+  console.log();
+  console.log("  " + dim("Leave this running. In another terminal:"));
+  console.log("    " + accent(`openclaw agent --local --agent main -m "<your task>"`));
+  console.log();
+  console.log("  " + dim("Ctrl+C here to stop."));
+  console.log();
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
   spawn(opener, [url], { stdio: "ignore", detached: true }).unref();
 
-  await new Promise(() => {}); // run until Ctrl+C
+  await new Promise(() => {});
 }
 
 function readCurrentState() {
@@ -1729,19 +1849,18 @@ async function renderAndConfirm(graph, paragraph) {
   const headless = !process.env.DISPLAY && !process.env.BROWSER;
 
   if (headless) {
-    console.log("\n--- Workflow diagram (Mermaid) ---");
-    console.log(mermaid);
-    console.log("--- end ---\n");
+    console.log("  " + dim("headless — Mermaid source:"));
+    console.log(mermaid.split("\n").map((l) => "    " + gray(l)).join("\n"));
   } else {
     const htmlPath = writeHtml(graph, paragraph, mermaid);
-    console.log(`\nOpening graph in your browser: ${htmlPath}`);
+    console.log(`  ${accent("→")} ${bold("Opened in browser:")} ${gray(htmlPath)}`);
     const opener = process.platform === "darwin" ? "open" : "xdg-open";
     spawn(opener, [htmlPath], { stdio: "ignore", detached: true }).unref();
   }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const answer = await new Promise((resolve) =>
-    rl.question("\nApprove this workflow? (y/N): ", (a) => {
+    rl.question("\n  " + bold("Approve this workflow?") + dim(" (y/N) "), (a) => {
       rl.close();
       resolve(a.trim().toLowerCase());
     }),
