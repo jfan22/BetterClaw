@@ -1762,11 +1762,33 @@ function detectVertical(paragraph) {
     return "sales";
   if (hit("flight", "hotel", "travel ", "trip ", "airfare", "booking", "itinerary", "airport"))
     return "travel";
-  if (hit("wireless mouse", "headphones", "shop ", "buy ", "purchase", "product", "catalog", "price compare", "electronics store", "online store", "smartwatch", "add to cart"))
+  // Shopping — match explicit retail verbs, price-comparison intent, product
+  // categories from the dummyjson vocabulary, and gift-shopping patterns.
+  // "shipping" isn't here because it's ambiguous (email with shipping-update
+  // context). Use other signals.
+  if (
+    hit(
+      // retail verbs + patterns
+      "shop ", "shop for", "shopping for", "buy ", "purchase", "add to cart",
+      "price compare", "online store", "electronics store",
+      // generic product intent
+      "product", "catalog", "recommend a ", "good ", "best ",
+      // gift-shopping patterns (Mother's Day, Father's Day, birthday, etc.)
+      "gift", "mother's day", "father's day", "birthday present", "anniversary gift",
+      // dummyjson category vocabulary
+      "smartphone", "laptop", "tablet", "wireless mouse", "headphones", "smartwatch",
+      "jewellery", "jewelry", "fragrance", "perfume", "sunglasses",
+      "skin-care", "skin care", "beauty product", "makeup",
+      "home-decoration", "home decor", "kitchen-accessories",
+      "mens-shirt", "mens-shoes", "mens-watches",
+      "womens-bag", "womens-dress", "womens-jewellery", "womens-shoes", "womens-watches",
+    )
+  )
     return "shopping";
   if (hit("inbox", "gmail", "draft reply", "triage my inbox", "newsletters", "my email", "my inbox", "emails from"))
     return "email";
-  // default catch-all: email is our most mature vertical
+  // Last-resort default: warn rather than silently picking a vertical.
+  // The caller will see it and either add --vertical=X or rewrite the paragraph.
   return "email";
 }
 
