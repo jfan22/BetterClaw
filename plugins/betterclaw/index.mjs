@@ -168,9 +168,12 @@ export default definePluginEntry({
             for (const suffix of ["approved", "denied"]) {
               try { fs.unlinkSync(path.join(approvalsDir, `${id}.${suffix}`)); } catch {}
             }
-            process.stderr.write(
-              `[APPROVAL] ${endTs} id=${id} → ${decision === "approved" ? "APPROVED" : "DENIED"}\n`,
-            );
+            const statusLabel =
+              decision === "approved" ? "APPROVED" :
+              decision === "denied" ? "DENIED" :
+              decision === "cancelled" ? "CANCELLED (shutdown)" :
+              "TIMEOUT";
+            process.stderr.write(`[APPROVAL] ${endTs} id=${id} → ${statusLabel}\n`);
             runLogger.append({ ts: endTs, type: "approval_resolved", id, decision });
             approvalPromiseByHash.delete(hash);
             return decision;
@@ -187,6 +190,12 @@ export default definePluginEntry({
           return {
             block: true,
             blockReason: `User denied approval for '${stripped}' at node '${workflowState.currentNode}'.`,
+          };
+        }
+        if (decision === "cancelled" || decision === "timeout") {
+          return {
+            block: true,
+            blockReason: `Approval ${decision} for '${stripped}' at node '${workflowState.currentNode}'.`,
           };
         }
       }

@@ -110,13 +110,22 @@ export function resolveApprovalsDir(pluginRoot) {
   return path.join(pluginRoot, "approvals");
 }
 
+// Global cancellation signal — set when the plugin VM is shutting down so
+// in-flight approval waits can abort cleanly instead of dangling.
+let shutdownRequested = false;
+function triggerShutdown() { shutdownRequested = true; }
+process.once("SIGTERM", triggerShutdown);
+process.once("SIGINT", triggerShutdown);
+
 // Block until the approval file appears. Polls every 200ms. Returns
-// "approved" | "denied" | "timeout". No timeout if timeoutMs=0.
+// "approved" | "denied" | "timeout" | "cancelled".
+//   timeoutMs=0 → wait forever (until shutdown).
 export async function waitForApproval(approvalsDir, id, timeoutMs = 0) {
   const approved = path.join(approvalsDir, `${id}.approved`);
   const denied = path.join(approvalsDir, `${id}.denied`);
   const start = Date.now();
   for (;;) {
+    if (shutdownRequested) return "cancelled";
     if (fs.existsSync(approved)) return "approved";
     if (fs.existsSync(denied)) return "denied";
     if (timeoutMs > 0 && Date.now() - start >= timeoutMs) return "timeout";

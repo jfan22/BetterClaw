@@ -433,6 +433,16 @@ if (args[0] === "pending") {
   process.exit(0);
 }
 
+if (args[0] === "show") {
+  const target = args[1];
+  if (!target) {
+    console.error("  " + deny("✗") + "  Usage: " + bold("betterclaw show <id>"));
+    process.exit(1);
+  }
+  showApproval(target);
+  process.exit(0);
+}
+
 if (args[0] === "doctor") {
   runDoctor();
   process.exit(0);
@@ -778,6 +788,7 @@ function printHelp() {
   console.log(pair(`betterclaw view`,                `Render a replay-diff of the last agent run`));
   console.log(pair(`betterclaw view --watch`,        `Live HTTP server + browser view (approve / deny buttons)`));
   console.log(pair(`betterclaw pending`,             `List in-flight approval requests`));
+  console.log(pair(`betterclaw show <id>`,           `Show a pending request in full (params pretty-printed)`));
   console.log(pair(`betterclaw approve <id>`,        `Approve a pending request`));
   console.log(pair(`betterclaw deny <id>`,           `Deny a pending request`));
   console.log(pair(`betterclaw doctor`,              `Diagnose setup problems`));
@@ -1214,6 +1225,22 @@ See \`paragraph.md\` in this gist.
 
 // ---- existing helpers below ----
 
+function loadPendingApprovals() {
+  if (!fs.existsSync(RUN_LOG_PATH)) return { events: [], pending: new Map() };
+  const events = fs
+    .readFileSync(RUN_LOG_PATH, "utf8")
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(Boolean);
+  const pending = new Map();
+  for (const e of events) {
+    if (e.type === "approval_pending") pending.set(e.id, e);
+    if (e.type === "approval_resolved") pending.delete(e.id);
+  }
+  return { events, pending };
+}
+
 function listPending() {
   console.log();
   console.log("  " + ui.kicker("BetterClaw · Pending approvals"));
@@ -1223,33 +1250,80 @@ function listPending() {
     console.log();
     return;
   }
-  const events = fs
-    .readFileSync(RUN_LOG_PATH, "utf8")
-    .split("\n")
-    .filter((l) => l.trim())
-    .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-    .filter(Boolean);
-  const pendingMap = new Map();
-  for (const e of events) {
-    if (e.type === "approval_pending") pendingMap.set(e.id, e);
-    if (e.type === "approval_resolved") pendingMap.delete(e.id);
-  }
-  if (pendingMap.size === 0) {
+  const { pending } = loadPendingApprovals();
+  if (pending.size === 0) {
     console.log("  " + dim("No pending approvals."));
     console.log();
     return;
   }
-  for (const [id, e] of pendingMap) {
+  for (const [id, e] of pending) {
     const ts = (e.ts || "").slice(11, 19);
-    console.log(`  ${ui.chip(id, "pending")}  ${bold(e.tool)}  ${dim("at node")} ${e.node}  ${gray(ts)}`);
-    if (e.params && Object.keys(e.params).length > 0) {
-      const preview = JSON.stringify(e.params).slice(0, 200);
-      console.log(`    ${dim("params:")} ${gray(preview + (preview.length >= 200 ? "…" : ""))}`);
-    }
+    // Compact summary: most important param keys only
+    const paramKeys = e.params ? Object.keys(e.params) : [];
+    const hint = paramKeys.length > 0
+      ? dim("params: ") + gray("{ " + paramKeys.slice(0, 4).join(", ") + (paramKeys.length > 4 ? ", …" : "") + " }")
+      : dim("(no params)");
+    console.log(`  ${ui.chip(id, "pending")}  ${bold(e.tool)}  ${dim("at")} ${e.node}  ${gray(ts)}`);
+    console.log(`    ${hint}`);
   }
   console.log();
-  console.log("  " + dim("Resolve: ") + accent("betterclaw approve <id>") + dim("  or  ") + accent("betterclaw deny <id>"));
+  console.log("  " + dim("Inspect:  ") + accent("betterclaw show <id>"));
+  console.log("  " + dim("Resolve:  ") + accent("betterclaw approve <id>") + dim("  or  ") + accent("betterclaw deny <id>"));
   console.log();
+}
+
+function showApproval(idOrFragment) {
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Approval detail"));
+  console.log("  " + ui.hr());
+  const { events, pending: pendingMap } = loadPendingApprovals();
+  let entry = pendingMap.get(idOrFragment);
+  if (!entry) {
+    for (const [id, e] of pendingMap) {
+      if (id.startsWith(idOrFragment)) { entry = e; break; }
+    }
+  }
+  let resolution = null;
+  if (!entry) {
+    for (const e of events) {
+      if (e.type === "approval_pending" && (e.id === idOrFragment || e.id.startsWith(idOrFragment))) {
+        entry = e;
+      }
+      if (e.type === "approval_resolved" && entry && e.id === entry.id) {
+        resolution = e;
+      }
+    }
+  }
+  if (!entry) {
+    console.log(`  ${deny("✗")}  No approval with id ${bold(idOrFragment)}`);
+    console.log();
+    process.exit(1);
+  }
+  const ts = (entry.ts || "").replace("T", " ").slice(0, 19);
+  console.log(`  ${dim("id       ")} ${ui.chip(entry.id, "pending")}`);
+  console.log(`  ${dim("tool     ")} ${bold(entry.tool)}`);
+  console.log(`  ${dim("node     ")} ${entry.node}`);
+  console.log(`  ${dim("requested")} ${gray(ts)}`);
+  if (resolution) {
+    const resTs = (resolution.ts || "").replace("T", " ").slice(0, 19);
+    const verb = resolution.decision === "approved" ? allow("APPROVED") : deny("DENIED");
+    console.log(`  ${dim("resolved ")} ${verb} ${gray("at " + resTs)}`);
+  } else if (pendingMap.has(entry.id)) {
+    console.log(`  ${dim("resolved ")} ${pending("still waiting")}`);
+  } else {
+    console.log(`  ${dim("resolved ")} ${dim("(unknown)")}`);
+  }
+  console.log();
+  console.log("  " + bold("Parameters"));
+  const pretty = JSON.stringify(entry.params ?? {}, null, 2);
+  for (const line of pretty.split("\n")) {
+    console.log("    " + line);
+  }
+  console.log();
+  if (!resolution && pendingMap.has(entry.id)) {
+    console.log("  " + dim("Resolve: ") + accent(`betterclaw approve ${entry.id}`) + dim("  or  ") + accent(`betterclaw deny ${entry.id}`));
+    console.log();
+  }
 }
 
 function resolveApproval(id, decision) {
