@@ -23,9 +23,9 @@ BetterClaw compiles to one of four verticals per workflow. The compiler auto-det
 | Vertical | Tools | Backend |
 |---|---|---|
 | `email` | `gmail_search`, `gmail_read`, `gmail_draft` | `@gongrzhe/server-gmail-autoauth-mcp` (spawned child) |
-| `shopping` | `shop_search`, `shop_details`, `shop_compare` | Embedded catalog (12 products — electronics, clothing, jewelery) |
-| `sales` | `sales_find_leads`, `sales_enrich`, `sales_draft_outreach` | Embedded lead catalog (5 fake leads) — stub; swap for HubSpot/Salesforce MCP later |
-| `travel` | `travel_search_flights`, `travel_search_hotels`, `travel_compare_flights` | Embedded flight + hotel catalog — stub; swap for Amadeus/Sabre later |
+| `shopping` | `shop_search`, `shop_details`, `shop_compare` | **Real** — dummyjson.com (194 products, 24 categories, server-side search, no auth) |
+| `sales` | `sales_find_leads`, `sales_enrich`, `sales_draft_outreach` | Stub lead catalog (5 fake leads). File header shows HubSpot / Apollo / Salesforce swap patterns. |
+| `travel` | `travel_search_flights`, `travel_search_hotels`, `travel_compare_flights` | Stub flight + hotel catalog. File header shows Amadeus swap pattern. |
 
 Verticals live in `plugins/betterclaw/vertical-*.mjs` — adding a new one is: write a file that exports a `{id, tools, guidance_for_compiler}` object, import it in `index.mjs`, add an entry to `VERTICAL_GUIDANCE` in `cli/betterclaw`. ~50 LOC per vertical for the tool stubs.
 

@@ -1,134 +1,163 @@
-// Shopping vertical — embedded catalog. We started with fakestoreapi.com but
-// it's behind Cloudflare challenge (403 from any non-browser client), so we
-// switched to a local catalog for zero-network-dependency demos. Real
-// deployments would swap this for a real catalog MCP (Amazon PA API,
-// Shopify, or a scraping MCP via the browser tool).
+// Shopping vertical — backed by https://dummyjson.com (free, no auth, 194
+// real products across 24 categories with server-side search + categories +
+// full product records including reviews). A step up from the initial embedded
+// catalog, and a step down from a real commercial API like Amazon's Product
+// Advertising. Zero account setup; works from any Node 22 environment.
+//
+// Swap this for a real commercial backend by implementing the same three
+// tool contracts (shop_search, shop_details, shop_compare) against whichever
+// API you have creds for — the workflow graph schema and BetterClaw plugin
+// don't know which backend they're talking to.
 
 import { Type } from "@sinclair/typebox";
 
-const CATALOG = [
-  { id: 1,  title: "Logitech MX Master 3S Wireless Mouse",        price: 99.99, category: "electronics",    description: "Flagship ergonomic wireless mouse. Ultra-fast scrolling. Silent click.",           rating: { rate: 4.8, count: 3241 } },
-  { id: 2,  title: "Logitech M185 Wireless Mouse",                price: 16.99, category: "electronics",    description: "Budget wireless mouse, 1000 DPI, 1-year battery.",                                  rating: { rate: 4.3, count: 8210 } },
-  { id: 3,  title: "Razer Basilisk V3 Pro Wireless Mouse",        price: 149.99, category: "electronics",   description: "Gaming-grade wireless mouse. 11 buttons, 4000Hz polling.",                          rating: { rate: 4.6, count: 1123 } },
-  { id: 4,  title: "Anker Wireless Ergonomic Vertical Mouse",     price: 34.99, category: "electronics",    description: "Affordable vertical wireless mouse. Adjustable DPI. 18-month battery.",             rating: { rate: 4.2, count: 4050 } },
-  { id: 5,  title: "Apple Magic Mouse 2",                         price: 79.00, category: "electronics",    description: "Apple's multi-touch wireless mouse. Rechargeable. Minimalist design.",              rating: { rate: 4.0, count: 2890 } },
-  { id: 6,  title: "Sony WH-1000XM5 Headphones",                  price: 349.00, category: "electronics",   description: "Flagship noise-canceling wireless headphones.",                                     rating: { rate: 4.7, count: 5612 } },
-  { id: 7,  title: "Keychron K6 Wireless Mechanical Keyboard",    price: 84.00, category: "electronics",    description: "65% layout wireless mechanical keyboard. Hot-swappable switches.",                  rating: { rate: 4.5, count: 1832 } },
-  { id: 8,  title: "Anker Soundcore Life Q30 Headphones",         price: 79.99, category: "electronics",    description: "Budget noise-canceling wireless headphones, 40h battery.",                          rating: { rate: 4.4, count: 9217 } },
-  { id: 9,  title: "Fossil Gen 6 Smartwatch",                     price: 199.00, category: "electronics",   description: "Wear OS smartwatch with heart-rate, GPS, speaker.",                                 rating: { rate: 4.1, count: 1104 } },
-  { id: 10, title: "Silver Hoop Earrings",                        price: 24.50,  category: "jewelery",      description: "Sterling silver classic hoop earrings, 1-inch diameter.",                           rating: { rate: 4.4, count: 230 } },
-  { id: 11, title: "Men's Casual Slim Fit Shirt",                 price: 29.99,  category: "men's clothing",  description: "Classic fit slim button-down shirt, cotton blend.",                               rating: { rate: 4.2, count: 511 } },
-  { id: 12, title: "Women's Winter Parka",                        price: 139.00, category: "women's clothing", description: "Insulated parka with faux fur hood. Waterproof shell.",                           rating: { rate: 4.6, count: 340 } },
-];
+const API = "https://dummyjson.com";
 
-async function loadCatalog() {
-  return CATALOG;
+async function fetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} returned HTTP ${res.status}`);
+  return res.json();
 }
 
 function toolText(obj) {
   return { content: [{ type: "text", text: JSON.stringify(obj, null, 2) }] };
 }
 
+// Trim the fat: dummyjson product records are ~1.5KB each; agents don't need
+// dimensions, stock, shipping info, full reviews, etc. for search. Details
+// keeps more — useful when the agent's comparing.
+function summarize(p) {
+  return {
+    id: p.id,
+    title: p.title,
+    brand: p.brand ?? null,
+    category: p.category,
+    price: p.price,
+    discount_percent: p.discountPercentage ?? 0,
+    rating: p.rating,
+    stock: p.stock,
+    tags: p.tags ?? [],
+  };
+}
+
+function detail(p) {
+  return {
+    ...summarize(p),
+    description: p.description,
+    availability: p.availabilityStatus,
+    warranty: p.warrantyInformation,
+    shipping: p.shippingInformation,
+    return_policy: p.returnPolicy,
+    review_count: (p.reviews ?? []).length,
+    average_review_rating:
+      p.reviews && p.reviews.length > 0
+        ? +(p.reviews.reduce((s, r) => s + r.rating, 0) / p.reviews.length).toFixed(2)
+        : null,
+  };
+}
+
 export const vertical = {
   id: "shopping",
-  description: "Search and compare products in an online store.",
+  description: "Real product catalog search + compare via dummyjson.com (194 products, 24 categories).",
   guidance_for_compiler: `
 AVAILABLE TOOLS — pick only from this list:
-- shop_search: search the product catalog by keywords; returns list of {id, title, price, category}
-- shop_details: fetch the full record for one product by id
-- shop_compare: side-by-side details for two product ids
+- shop_search: keyword search across titles and descriptions. Server-side. Returns id+title+price+category+rating.
+- shop_details: full product record by id: description, reviews, availability, warranty, shipping, return policy.
+- shop_compare: side-by-side of two products with delta on price, rating, and category match.
+
+CATEGORIES (pick from this list when filtering): beauty, fragrances, furniture, groceries, home-decoration, kitchen-accessories, laptops, mens-shirts, mens-shoes, mens-watches, mobile-accessories, motorcycle, skin-care, smartphones, sports-accessories, sunglasses, tablets, tops, vehicle, womens-bags, womens-dresses, womens-jewellery, womens-shoes, womens-watches.
 
 RULES:
-1. The entry node's allowed_tools MUST include "shop_search" (every workflow starts by searching).
+1. The entry node's allowed_tools MUST include "shop_search".
 2. Fetching details ("shop_details") must come after searching.
-3. Comparing ("shop_compare") must come after you have at least two candidates from searching or getting details.
+3. Comparing ("shop_compare") must come after you have at least two candidates from search/details.
 `.trim(),
   tools: [
     {
       name: "shop_search",
       description:
-        "Search the product catalog. Matches keywords against title, description, and category. Optionally filter by max price.",
+        "Search the product catalog. Matches against title/description/tags. Optional max-price filter. Returns summary records (id, title, brand, price, rating, category).",
       parameters: Type.Object({
         query: Type.String({ description: "Keywords to match" }),
         maxPrice: Type.Optional(Type.Number({ description: "Price ceiling in USD" })),
         category: Type.Optional(
           Type.String({
-            description:
-              "Optional category filter. Known values: 'electronics', 'jewelery', 'men's clothing', 'women's clothing'.",
+            description: "Optional category filter (use the slug from the categories list in this vertical's guidance).",
           }),
         ),
         maxResults: Type.Optional(Type.Number({ default: 5 })),
       }),
       async execute(_id, params) {
-        const catalog = await loadCatalog();
-        const q = String(params.query || "").toLowerCase();
-        const terms = q.split(/\s+/).filter(Boolean);
-        const matches = catalog.filter((p) => {
-          const hay = `${p.title} ${p.description} ${p.category}`.toLowerCase();
-          const textMatch = terms.length === 0 || terms.some((t) => hay.includes(t));
-          const priceOk = params.maxPrice == null || p.price <= params.maxPrice;
-          const catOk = !params.category || p.category === params.category;
-          return textMatch && priceOk && catOk;
-        });
-        const limited = matches.slice(0, params.maxResults ?? 5).map((p) => ({
-          id: p.id,
-          title: p.title,
-          price: p.price,
-          category: p.category,
-          rating: p.rating,
-        }));
-        return toolText({ total_matches: matches.length, returned: limited.length, results: limited });
+        const limit = Math.min(params.maxResults ?? 5, 30);
+        // dummyjson doesn't combine search + category, so: if category given,
+        // fetch category then filter in-memory; otherwise use search endpoint.
+        let products;
+        if (params.category) {
+          const data = await fetchJson(
+            `${API}/products/category/${encodeURIComponent(params.category)}?limit=100`,
+          );
+          const q = String(params.query || "").toLowerCase();
+          products = (data.products || []).filter((p) =>
+            !q || `${p.title} ${p.description}`.toLowerCase().includes(q),
+          );
+        } else {
+          const data = await fetchJson(
+            `${API}/products/search?q=${encodeURIComponent(params.query)}&limit=${limit * 2}`,
+          );
+          products = data.products || [];
+        }
+        const priced = products.filter((p) => params.maxPrice == null || p.price <= params.maxPrice);
+        const results = priced.slice(0, limit).map(summarize);
+        return toolText({ total_matches: priced.length, returned: results.length, results });
       },
     },
     {
       name: "shop_details",
-      description: "Fetch the full record for one product (title, description, image URL, rating).",
+      description: "Fetch the full record for one product (description, reviews summary, availability, warranty, shipping, return policy).",
       parameters: Type.Object({
         productId: Type.Number({ description: "Product id from shop_search" }),
       }),
       async execute(_id, params) {
-        const catalog = await loadCatalog();
-        const p = catalog.find((x) => x.id === Number(params.productId));
-        if (!p) {
+        try {
+          const p = await fetchJson(`${API}/products/${Number(params.productId)}`);
+          return toolText(detail(p));
+        } catch (err) {
           return {
-            content: [
-              { type: "text", text: `No product with id ${params.productId}` },
-            ],
+            content: [{ type: "text", text: `No product with id ${params.productId} (${err.message})` }],
             isError: true,
           };
         }
-        return toolText(p);
       },
     },
     {
       name: "shop_compare",
       description:
-        "Side-by-side comparison of two products. Returns both records + a field-by-field delta (price, rating, category).",
+        "Side-by-side comparison of two products. Returns both full records + a delta on price, rating, discount, and whether they share a category.",
       parameters: Type.Object({
         productIdA: Type.Number(),
         productIdB: Type.Number(),
       }),
       async execute(_id, params) {
-        const catalog = await loadCatalog();
-        const a = catalog.find((x) => x.id === Number(params.productIdA));
-        const b = catalog.find((x) => x.id === Number(params.productIdB));
-        if (!a || !b) {
+        try {
+          const [a, b] = await Promise.all([
+            fetchJson(`${API}/products/${Number(params.productIdA)}`),
+            fetchJson(`${API}/products/${Number(params.productIdB)}`),
+          ]);
+          const delta = {
+            price_difference_usd: +(a.price - b.price).toFixed(2),
+            rating_difference: +(a.rating - b.rating).toFixed(2),
+            discount_difference_points: +((a.discountPercentage ?? 0) - (b.discountPercentage ?? 0)).toFixed(2),
+            same_category: a.category === b.category,
+            category_a: a.category,
+            category_b: b.category,
+          };
+          return toolText({ a: detail(a), b: detail(b), delta });
+        } catch (err) {
           return {
-            content: [
-              {
-                type: "text",
-                text: `Missing product(s). a=${a ? "ok" : "not found"} b=${b ? "ok" : "not found"}`,
-              },
-            ],
+            content: [{ type: "text", text: `Failed to fetch one or both products: ${err.message}` }],
             isError: true,
           };
         }
-        const delta = {
-          price_difference: +(a.price - b.price).toFixed(2),
-          rating_difference: +((a.rating?.rate ?? 0) - (b.rating?.rate ?? 0)).toFixed(2),
-          same_category: a.category === b.category,
-        };
-        return toolText({ a, b, delta });
       },
     },
   ],

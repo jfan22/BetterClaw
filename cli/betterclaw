@@ -298,16 +298,16 @@ const VERTICAL_GUIDANCE = {
 - gmail_draft: create a draft reply (never sends)`,
   },
   shopping: {
-    description: "Online shopping — search product catalog, inspect details, compare options.",
+    description: "Online shopping — real catalog via dummyjson.com (194 products, 24 categories). Search, inspect, compare.",
     tools: ["shop_search", "shop_details", "shop_compare"],
     rules: [
       `The entry node's allowed_tools MUST include "shop_search".`,
       `Fetching details ("shop_details") must come after searching.`,
       `Comparing ("shop_compare") must come after you have at least two candidates.`,
     ],
-    tool_descriptions: `- shop_search: search catalog by keywords; optional max price + category filter
-- shop_details: fetch full record for one product by id
-- shop_compare: side-by-side of two products`,
+    tool_descriptions: `- shop_search: keyword search across titles and descriptions; optional maxPrice + category filter (valid categories: beauty, fragrances, furniture, groceries, home-decoration, kitchen-accessories, laptops, mens-shirts, mens-shoes, mens-watches, mobile-accessories, motorcycle, skin-care, smartphones, sports-accessories, sunglasses, tablets, tops, vehicle, womens-bags, womens-dresses, womens-jewellery, womens-shoes, womens-watches)
+- shop_details: fetch full product record (description, reviews summary, availability, warranty, shipping, return policy)
+- shop_compare: side-by-side of two products with price/rating/discount/category delta`,
   },
   sales: {
     description: "Sales — find leads, enrich, draft personalized outreach.",

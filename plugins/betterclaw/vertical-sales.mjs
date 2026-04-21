@@ -1,7 +1,29 @@
-// Sales vertical — lead gen + outreach. Stub catalog for v1; replace with a
-// real CRM MCP (HubSpot, Salesforce, Apollo) when moving past the demo stage.
-// Outreach piggybacks on the email vertical — sales_send_outreach is effectively
-// a prebuilt gmail_draft with personalization.
+// Sales vertical — lead gen + outreach.
+//
+// This vertical ships with a stub catalog (5 fake leads) so the demo works
+// offline with no account setup. The three tool contracts (sales_find_leads,
+// sales_enrich, sales_draft_outreach) are the public interface — swap in a
+// real CRM backend by replacing just the three `execute` bodies below.
+//
+// SWAP PATTERNS (sketched — not wired by default):
+//
+//   HubSpot (OAuth, HUBSPOT_ACCESS_TOKEN env):
+//     sales_find_leads  → POST /crm/v3/objects/contacts/search   (filterGroups by industry/size)
+//     sales_enrich      → GET  /crm/v3/objects/contacts/{id}     (associations=company)
+//     sales_draft_outreach → GET /crm/v3/objects/contacts/{id} then format a draft
+//
+//   Apollo.io (API key, APOLLO_API_KEY env):
+//     sales_find_leads  → POST https://api.apollo.io/v1/mixed_people/search
+//     sales_enrich      → POST https://api.apollo.io/v1/people/match
+//     sales_draft_outreach → Apollo emailer_campaigns or just format locally
+//
+//   Salesforce (OAuth, SF_* env):
+//     sales_find_leads  → SOQL: "SELECT Id, Name, Title FROM Lead WHERE Industry=..."
+//     sales_enrich      → REST: GET /sobjects/Lead/{id}
+//
+// We don't ship any of these by default — they each require real account
+// setup that the BetterClaw user hasn't authenticated for. When you swap,
+// keep the same return shape (see FAKE_LEADS summaries and toolText outputs).
 
 import { Type } from "@sinclair/typebox";
 

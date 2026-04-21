@@ -1,6 +1,27 @@
-// Travel vertical — flight + hotel search, stub catalog for v1. Replace with
-// a real travel MCP (Amadeus, Sabre) or the browser tool for web scraping once
-// the architecture is proven.
+// Travel vertical — flight + hotel search.
+//
+// Ships with stub catalogs (5 flights, 5 hotels) so the demo works offline
+// with zero account setup. The tool contracts (travel_search_flights,
+// travel_search_hotels, travel_compare_flights) are stable — swap in a real
+// backend by replacing just the `execute` bodies below.
+//
+// SWAP PATTERNS (sketched — not wired by default):
+//
+//   Amadeus Self-Service (free dev tier, AMADEUS_API_KEY + AMADEUS_API_SECRET):
+//     travel_search_flights → GET /v2/shopping/flight-offers?originLocationCode=...
+//     travel_search_hotels  → GET /v3/shopping/hotel-offers?cityCode=...
+//     travel_compare_flights → local diff on two /v2/shopping/flight-offers results
+//     (Amadeus has generous free tier — 10k test-env requests/month.)
+//
+//   Skyscanner / Kiwi / Duffel: partner access required.
+//
+//   Browser scraping (fallback when no API credentials): wire OpenClaw's
+//   browser tool via MCP to google.com/flights or kayak.com. Fragile and
+//   rate-limited; use only if the user explicitly opts in.
+//
+// Keep the same return shape (id, carrier, from/to, depart/arrive, stops,
+// price for flights; id, name, city, neighborhood, rating, pricePerNight for
+// hotels) so downstream graphs don't care which backend is serving them.
 
 import { Type } from "@sinclair/typebox";
 
