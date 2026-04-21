@@ -1,0 +1,9 @@
+{
+  "id": "betterclaw",
+  "name": "BetterClaw",
+  "description": "Workflow-enforcement plugin for OpenClaw — snaps agents back when they try to step outside their declared workflow.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}

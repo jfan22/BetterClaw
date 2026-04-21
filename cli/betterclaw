@@ -1,0 +1,1557 @@
+#!/usr/bin/env node
+// betterclaw CLI — compile an English paragraph into a BetterClaw workflow
+// graph and write it to the plugin's active-graph.json.
+//
+// Usage:
+//   betterclaw "triage my inbox: flag investors, draft replies for customers"
+//   betterclaw --show           # print current graph
+//   betterclaw --help
+
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import readline from "node:readline";
+import { spawnSync, spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PLUGIN_ROOT = path.resolve(__dirname, "../plugins/betterclaw");
+const GRAPH_PATH = path.join(PLUGIN_ROOT, "active-graph.json");
+const PARAGRAPH_PATH = path.join(PLUGIN_ROOT, "active-paragraph.md");
+const RUN_LOG_PATH = path.join(PLUGIN_ROOT, "run.jsonl");
+const APPROVALS_DIR = path.join(PLUGIN_ROOT, "approvals");
+const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
+
+const VERTICAL_GUIDANCE = {
+  email: {
+    description: "Gmail triage — search, read, draft replies.",
+    tools: ["gmail_search", "gmail_read", "gmail_draft"],
+    rules: [
+      `The entry node's allowed_tools MUST include "gmail_search".`,
+      `Reading ("gmail_read") must come after searching.`,
+      `Drafting ("gmail_draft") must come after reading.`,
+    ],
+    tool_descriptions: `- gmail_search: search/list emails (Gmail query syntax: "in:inbox", "from:x@y", "is:unread")
+- gmail_read: read one email's full content by message ID
+- gmail_draft: create a draft reply (never sends)`,
+  },
+  shopping: {
+    description: "Online shopping — search product catalog, inspect details, compare options.",
+    tools: ["shop_search", "shop_details", "shop_compare"],
+    rules: [
+      `The entry node's allowed_tools MUST include "shop_search".`,
+      `Fetching details ("shop_details") must come after searching.`,
+      `Comparing ("shop_compare") must come after you have at least two candidates.`,
+    ],
+    tool_descriptions: `- shop_search: search catalog by keywords; optional max price + category filter
+- shop_details: fetch full record for one product by id
+- shop_compare: side-by-side of two products`,
+  },
+  sales: {
+    description: "Sales — find leads, enrich, draft personalized outreach.",
+    tools: ["sales_find_leads", "sales_enrich", "sales_draft_outreach"],
+    rules: [
+      `The entry node's allowed_tools MUST include "sales_find_leads".`,
+      `Enriching ("sales_enrich") must come after finding leads.`,
+      `Drafting outreach ("sales_draft_outreach") must come after enriching — never blind-spam.`,
+    ],
+    tool_descriptions: `- sales_find_leads: filter lead catalog by industry / size / keyword
+- sales_enrich: fetch full detail for one lead
+- sales_draft_outreach: compose personalized outreach email for one lead`,
+  },
+  travel: {
+    description: "Travel — flight + hotel search, comparison.",
+    tools: ["travel_search_flights", "travel_search_hotels", "travel_compare_flights"],
+    rules: [
+      `The entry node's allowed_tools MUST include one of "travel_search_flights" or "travel_search_hotels".`,
+      `Comparing ("travel_compare_flights") must come after searching has returned candidates.`,
+    ],
+    tool_descriptions: `- travel_search_flights: find flights between two airports (3-letter codes), optional max price
+- travel_search_hotels: find hotels in a city, optional max price/night and min rating
+- travel_compare_flights: side-by-side comparison of two flight ids`,
+  },
+};
+
+const args = process.argv.slice(2);
+
+if (args[0] === "--version" || args[0] === "-v") {
+  const pkgPath = path.resolve(__dirname, "..", "package.json");
+  try {
+    const v = JSON.parse(fs.readFileSync(pkgPath, "utf8")).version;
+    console.log(`betterclaw ${v}`);
+  } catch {
+    console.log(`betterclaw (version unknown)`);
+  }
+  process.exit(0);
+}
+
+if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
+  printHelp();
+  process.exit(0);
+}
+
+if (args[0] === "--show") {
+  if (!fs.existsSync(GRAPH_PATH)) {
+    console.log(`No graph at ${GRAPH_PATH}`);
+    process.exit(1);
+  }
+  console.log(fs.readFileSync(GRAPH_PATH, "utf8"));
+  process.exit(0);
+}
+
+if (args[0] === "view" || args[0] === "--view") {
+  const watch = args.includes("--watch") || args.includes("-w");
+  if (watch) {
+    await startWatchServer();
+  } else {
+    viewLastRun();
+  }
+  process.exit(0);
+}
+
+if (args[0] === "approve" || args[0] === "deny") {
+  const decision = args[0];
+  const id = args[1];
+  if (!id) {
+    console.error(`Usage: betterclaw ${decision} <id>`);
+    process.exit(1);
+  }
+  resolveApproval(id, decision);
+  process.exit(0);
+}
+
+if (args[0] === "pending") {
+  listPending();
+  process.exit(0);
+}
+
+if (args[0] === "doctor") {
+  runDoctor();
+  process.exit(0);
+}
+
+if (args[0] === "save") {
+  if (!args[1]) {
+    console.error("Usage: betterclaw save <name>");
+    process.exit(1);
+  }
+  saveToLibrary(args[1]);
+  process.exit(0);
+}
+
+if (args[0] === "load") {
+  if (!args[1]) {
+    console.error("Usage: betterclaw load <name>");
+    process.exit(1);
+  }
+  loadFromLibrary(args[1]);
+  process.exit(0);
+}
+
+if (args[0] === "list") {
+  listLibrary();
+  process.exit(0);
+}
+
+if (args[0] === "fork") {
+  if (!args[1] || !args[2]) {
+    console.error("Usage: betterclaw fork <url-or-gist-id> <new-name>");
+    process.exit(1);
+  }
+  await forkFromUrl(args[1], args[2]);
+  process.exit(0);
+}
+
+if (args[0] === "diff") {
+  if (!args[1] || !args[2]) {
+    console.error("Usage: betterclaw diff <a> <b>  (names from the library, or 'active')");
+    process.exit(1);
+  }
+  diffGraphs(args[1], args[2]);
+  process.exit(0);
+}
+
+if (args[0] === "publish") {
+  if (!args[1]) {
+    console.error("Usage: betterclaw publish <name>  [--to gist]");
+    process.exit(1);
+  }
+  const dest = args[args.indexOf("--to") + 1] === "gist" ? "gist" : null;
+  await publishToRemote(args[1], dest);
+  process.exit(0);
+}
+
+const paragraph = args.join(" ").trim();
+if (!paragraph) {
+  console.error("Usage: betterclaw \"<paragraph>\"");
+  process.exit(1);
+}
+
+preflightCheck();
+
+const verticalId = detectVertical(paragraph);
+console.log(`Detected vertical: ${verticalId}`);
+const prompt = buildCompilePrompt(paragraph, verticalId);
+const graph = compileWithClaude(prompt);
+if (!graph.vertical) graph.vertical = verticalId; // belt + suspenders
+validateGraph(graph);
+
+console.log(`\nCompiled workflow graph:`);
+console.log(`  vertical: ${graph.vertical}`);
+console.log(`  entry: ${graph.entry}`);
+console.log(`  nodes: ${graph.nodes.length} (${graph.nodes.map((n) => n.id).join(", ")})`);
+console.log(`  edges: ${graph.edges.length}`);
+console.log(`  max_reconsider_retries: ${graph.max_reconsider_retries ?? 3}`);
+const approvals = Array.isArray(graph.requires_approval) ? graph.requires_approval : [];
+console.log(
+  `  requires_approval: ${approvals.length > 0 ? approvals.join(", ") : "(none — all tool calls autorun)"}`,
+);
+
+const approved = await renderAndConfirm(graph, paragraph);
+if (!approved) {
+  console.log("\nAborted — graph not written. Re-run with a different paragraph to try again.");
+  process.exit(0);
+}
+
+fs.writeFileSync(GRAPH_PATH, JSON.stringify(graph, null, 2) + "\n");
+fs.writeFileSync(PARAGRAPH_PATH, paragraph + "\n");
+console.log(`\nWritten to: ${GRAPH_PATH}`);
+console.log(
+  `\nNext: run \`openclaw agent --local --agent main -m "<your task>"\` — the plugin will load the new graph on the next agent turn.`,
+);
+
+// ---- helpers ----
+
+function runDoctor() {
+  const checks = [];
+
+  // Node version
+  const [maj] = process.versions.node.split(".").map(Number);
+  checks.push({
+    name: "Node >= 22",
+    ok: maj >= 22,
+    detail: `current: v${process.versions.node}`,
+    fix: "nvm install 22 && nvm use 22 && nvm alias default 22",
+  });
+
+  // openclaw CLI on PATH
+  const oc = spawnSync("openclaw", ["--version"], { encoding: "utf8" });
+  checks.push({
+    name: "openclaw CLI installed",
+    ok: oc.status === 0,
+    detail: oc.status === 0 ? oc.stdout.split("\n")[0] : "not found",
+    fix: "npm install -g openclaw@latest",
+  });
+
+  // BetterClaw plugin loaded
+  const inspect = spawnSync("openclaw", ["plugins", "inspect", "betterclaw"], { encoding: "utf8" });
+  const pluginOk = inspect.status === 0 && /Status:\s*loaded/.test(inspect.stdout);
+  checks.push({
+    name: "BetterClaw plugin loaded",
+    ok: pluginOk,
+    detail: pluginOk
+      ? "loaded"
+      : inspect.status === 0
+        ? "installed but not loaded — run `openclaw config set plugins.allow '[\"betterclaw\"]'`"
+        : "not installed",
+    fix: `openclaw plugins install ${PLUGIN_ROOT} --link --dangerously-force-unsafe-install && openclaw config set plugins.allow '["betterclaw"]'`,
+  });
+
+  // Claude CLI auth profile
+  const profilesPath = path.join(os.homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json");
+  let authOk = false;
+  try {
+    const profiles = JSON.parse(fs.readFileSync(profilesPath, "utf8"));
+    authOk = JSON.stringify(profiles).includes("claude");
+  } catch {}
+  checks.push({
+    name: "Claude CLI auth profile registered",
+    ok: authOk,
+    detail: authOk ? "present" : `missing ${profilesPath}`,
+    fix: "openclaw models auth login --provider anthropic --method cli --set-default",
+  });
+
+  // Active graph
+  const graphOk = fs.existsSync(GRAPH_PATH) && fs.statSync(GRAPH_PATH).size > 0;
+  let vertical = null;
+  if (graphOk) {
+    try {
+      vertical = JSON.parse(fs.readFileSync(GRAPH_PATH, "utf8")).vertical ?? "(none)";
+    } catch {}
+  }
+  checks.push({
+    name: "active-graph.json present",
+    ok: graphOk,
+    detail: graphOk ? `vertical=${vertical}` : "no graph compiled yet",
+    fix: `betterclaw "<your task>"`,
+  });
+
+  // Email-specific checks (only warn — email is optional)
+  const gmailCredOk = fs.existsSync(path.join(os.homedir(), ".gmail-mcp", "credentials.json"));
+  checks.push({
+    name: "Gmail OAuth credentials (optional)",
+    ok: gmailCredOk,
+    detail: gmailCredOk ? "~/.gmail-mcp/credentials.json present" : "missing (only needed for email vertical)",
+    fix: "See QUICKSTART.md §3 for Gmail setup.",
+    optional: !gmailCredOk,
+  });
+
+  // Stale day-1 gmail-mcp bundle — warn if both present (old conflict)
+  const bundlePath = path.join(os.homedir(), ".openclaw", "extensions", "gmail-mcp");
+  const bundlePresent = fs.existsSync(bundlePath);
+  if (bundlePresent) {
+    const bundleStatus = spawnSync("openclaw", ["plugins", "inspect", "gmail-mcp"], { encoding: "utf8" });
+    const bundleLoaded = /Status:\s*loaded/.test(bundleStatus.stdout);
+    checks.push({
+      name: "Day-1 gmail-mcp bundle (should be disabled)",
+      ok: !bundleLoaded,
+      detail: bundleLoaded
+        ? "LOADED — this will shadow BetterClaw's email enforcement!"
+        : "disabled (good)",
+      fix: "openclaw plugins disable gmail-mcp",
+    });
+  }
+
+  // Report
+  const pad = Math.max(...checks.map((c) => c.name.length));
+  let allGreen = true;
+  for (const c of checks) {
+    const mark = c.ok ? "✓" : c.optional ? "·" : "✗";
+    if (!c.ok && !c.optional) allGreen = false;
+    console.log(`${mark} ${c.name.padEnd(pad)}  ${c.detail}`);
+    if (!c.ok) console.log(`    fix: ${c.fix}`);
+  }
+
+  console.log("");
+  if (allGreen) {
+    console.log("All checks passed.");
+  } else {
+    console.log("Some required checks failed. See `fix:` hints above.");
+    process.exit(1);
+  }
+}
+
+function printHelp() {
+  console.log(`
+betterclaw — compile + inspect workflow-enforced agents.
+
+USAGE
+  betterclaw "<paragraph>"       Compile a paragraph to active-graph.json
+  betterclaw view                Render a replay-diff of the last agent run
+  betterclaw view --watch        Live HTTP server + browser view with approval buttons
+  betterclaw pending             List in-flight approval requests
+  betterclaw doctor              Diagnose setup problems
+  betterclaw approve <id>        Approve a pending request
+  betterclaw deny <id>           Deny a pending request
+
+Library / marketplace:
+  betterclaw save <name>         Snapshot the active graph into ~/.betterclaw/library
+  betterclaw load <name>         Load a saved graph as the active graph
+  betterclaw list                Show saved graphs
+  betterclaw fork <src> <name>   Fork a graph from a URL, gist:<id>, or local path
+  betterclaw diff <a> <b>        Side-by-side Mermaid diff of two graphs
+  betterclaw publish <name> --to gist   Publish via \`gh gist create\`
+
+Misc:
+  betterclaw --show              Print the currently-active graph
+  betterclaw --help              This message
+
+EXAMPLE
+  betterclaw "triage my inbox: draft replies for customer questions, let me approve each one"
+  openclaw agent --local --agent main -m "triage my inbox"
+  # agent pauses on gmail_draft → prints [APPROVAL] id=<x> → betterclaw approve <x>
+  betterclaw view                # replay the run
+
+OUTPUT
+  Writes the workflow graph to:
+  ${GRAPH_PATH}
+
+  The BetterClaw plugin picks up the new graph on the next agent turn
+  (the plugin VM is rebuilt per turn, so no restart needed).
+`);
+}
+
+function resolveApproval(id, decision) {
+  if (!/^[a-z0-9-]+$/i.test(id)) {
+    console.error(`error: invalid id ${id}`);
+    process.exit(1);
+  }
+  fs.mkdirSync(APPROVALS_DIR, { recursive: true });
+  const filename = decision === "approve" ? `${id}.approved` : `${id}.denied`;
+  const target = path.join(APPROVALS_DIR, filename);
+  fs.writeFileSync(target, String(Date.now()));
+  console.log(`${decision === "approve" ? "Approved" : "Denied"} ${id}. Agent will resume shortly.`);
+}
+
+// ---- library / marketplace ----
+
+function validateLibraryName(name) {
+  if (!/^[a-z0-9][a-z0-9-_]{0,63}$/i.test(name)) {
+    console.error(`error: invalid library name "${name}". Use letters, digits, dashes, underscores; 1-64 chars.`);
+    process.exit(1);
+  }
+}
+
+function libraryEntryDir(name) {
+  return path.join(LIBRARY_DIR, name);
+}
+
+function readActiveGraph() {
+  if (!fs.existsSync(GRAPH_PATH)) {
+    console.error(`error: no active graph at ${GRAPH_PATH}`);
+    console.error(`       Compile one first: betterclaw "<paragraph>"`);
+    process.exit(1);
+  }
+  return fs.readFileSync(GRAPH_PATH, "utf8");
+}
+
+function readActiveParagraph() {
+  if (fs.existsSync(PARAGRAPH_PATH)) return fs.readFileSync(PARAGRAPH_PATH, "utf8");
+  return "(paragraph not recorded — this graph was compiled before paragraph persistence shipped)\n";
+}
+
+function saveToLibrary(name) {
+  validateLibraryName(name);
+  const graphText = readActiveGraph();
+  const paragraphText = readActiveParagraph();
+  const dir = libraryEntryDir(name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "graph.json"), graphText);
+  fs.writeFileSync(path.join(dir, "paragraph.md"), paragraphText);
+  const graph = JSON.parse(graphText);
+  const meta = {
+    name,
+    saved_at: new Date().toISOString(),
+    source: "active",
+    nodes: graph.nodes?.length ?? 0,
+    edges: graph.edges?.length ?? 0,
+    entry: graph.entry ?? null,
+    requires_approval: graph.requires_approval ?? [],
+  };
+  fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
+  console.log(`Saved to library: ${dir}`);
+  console.log(`  ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
+  if (meta.requires_approval.length > 0) {
+    console.log(`  approval required for: ${meta.requires_approval.join(", ")}`);
+  }
+}
+
+function loadFromLibrary(name) {
+  validateLibraryName(name);
+  const dir = libraryEntryDir(name);
+  const graphPath = path.join(dir, "graph.json");
+  if (!fs.existsSync(graphPath)) {
+    console.error(`error: library entry "${name}" not found at ${dir}`);
+    process.exit(1);
+  }
+  fs.copyFileSync(graphPath, GRAPH_PATH);
+  const paraPath = path.join(dir, "paragraph.md");
+  if (fs.existsSync(paraPath)) fs.copyFileSync(paraPath, PARAGRAPH_PATH);
+  const meta = JSON.parse(fs.readFileSync(path.join(dir, "meta.json"), "utf8"));
+  console.log(`Loaded "${name}" as active graph.`);
+  console.log(`  ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
+  if (meta.forked_from) console.log(`  forked from: ${meta.forked_from}`);
+  console.log(`\nNext: run \`openclaw agent --local --agent main -m "<task>"\`.`);
+}
+
+function listLibrary() {
+  if (!fs.existsSync(LIBRARY_DIR)) {
+    console.log(`No saved graphs. Library dir: ${LIBRARY_DIR}`);
+    return;
+  }
+  const entries = fs
+    .readdirSync(LIBRARY_DIR)
+    .filter((e) => fs.statSync(path.join(LIBRARY_DIR, e)).isDirectory())
+    .sort();
+  if (entries.length === 0) {
+    console.log(`No saved graphs. Library dir: ${LIBRARY_DIR}`);
+    return;
+  }
+  const rows = [];
+  for (const name of entries) {
+    const metaPath = path.join(LIBRARY_DIR, name, "meta.json");
+    if (!fs.existsSync(metaPath)) continue;
+    const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+    rows.push(meta);
+  }
+  console.log(`Library (${rows.length} saved graphs at ${LIBRARY_DIR}):\n`);
+  const nameW = Math.max(4, ...rows.map((r) => r.name.length));
+  console.log(`  ${"name".padEnd(nameW)}  nodes  edges  approvals  saved`);
+  console.log(`  ${"-".repeat(nameW)}  -----  -----  ---------  ------------------------`);
+  for (const r of rows) {
+    const approvals = (r.requires_approval ?? []).length;
+    const saved = (r.saved_at || "").replace("T", " ").slice(0, 19);
+    console.log(
+      `  ${r.name.padEnd(nameW)}  ${String(r.nodes).padStart(5)}  ` +
+        `${String(r.edges).padStart(5)}  ${String(approvals).padStart(9)}  ${saved}`,
+    );
+  }
+}
+
+async function forkFromUrl(source, newName) {
+  validateLibraryName(newName);
+  const dir = libraryEntryDir(newName);
+  if (fs.existsSync(dir)) {
+    console.error(`error: library entry "${newName}" already exists at ${dir}`);
+    process.exit(1);
+  }
+
+  let graphText = null;
+  let paragraphText = null;
+  let originDescription = source;
+
+  // Path 1: it's already a local file.
+  if (fs.existsSync(source)) {
+    graphText = fs.readFileSync(source, "utf8");
+    const companionPara = source.replace(/\.json$/, ".md").replace(/graph\.json$/, "paragraph.md");
+    if (fs.existsSync(companionPara)) paragraphText = fs.readFileSync(companionPara, "utf8");
+  } else if (/^https?:\/\//.test(source)) {
+    // Path 2: HTTP(S) URL. Fetch it directly. Must be a graph.json or a
+    // gist page — if it's a gist page, we try to follow the raw URL.
+    graphText = await fetchUrl(source);
+    try {
+      JSON.parse(graphText);
+    } catch {
+      // Maybe a gist HTML page — scrape the raw URL.
+      const rawMatch = graphText.match(/https:\/\/gist\.githubusercontent\.com\/[^"']+\/graph\.json/);
+      if (rawMatch) {
+        console.log(`Following raw URL: ${rawMatch[0]}`);
+        graphText = await fetchUrl(rawMatch[0]);
+      } else {
+        console.error(`error: URL did not return JSON and no raw graph.json found in HTML`);
+        process.exit(1);
+      }
+    }
+  } else if (/^gist:/.test(source)) {
+    // Path 3: gist:<id>. Use the gh CLI if available.
+    const id = source.replace(/^gist:/, "");
+    const result = spawnSync("gh", ["gist", "view", id, "--filename", "graph.json"], {
+      encoding: "utf8",
+    });
+    if (result.status !== 0) {
+      console.error(`error: gh gist view failed. stderr:`);
+      console.error(result.stderr);
+      process.exit(1);
+    }
+    graphText = result.stdout;
+    originDescription = `gist:${id}`;
+  } else {
+    console.error(`error: don't know how to fork from "${source}"`);
+    console.error(`       supported: local path, http(s) URL to graph.json, gist:<id>`);
+    process.exit(1);
+  }
+
+  let graph;
+  try {
+    graph = JSON.parse(graphText);
+  } catch (err) {
+    console.error(`error: fetched content isn't valid JSON: ${err.message}`);
+    process.exit(2);
+  }
+  validateGraph(graph); // reuse the compile-time validator
+
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "graph.json"), JSON.stringify(graph, null, 2) + "\n");
+  if (paragraphText) fs.writeFileSync(path.join(dir, "paragraph.md"), paragraphText);
+  const meta = {
+    name: newName,
+    saved_at: new Date().toISOString(),
+    source: "fork",
+    forked_from: originDescription,
+    nodes: graph.nodes.length,
+    edges: graph.edges.length,
+    entry: graph.entry,
+    requires_approval: graph.requires_approval ?? [],
+  };
+  fs.writeFileSync(path.join(dir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
+  console.log(`Forked "${newName}" from ${originDescription}`);
+  console.log(`  ${meta.nodes} nodes, ${meta.edges} edges, entry=${meta.entry}`);
+  console.log(`  Load it: betterclaw load ${newName}`);
+}
+
+function fetchUrl(url) {
+  return fetch(url).then((res) => {
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
+    return res.text();
+  });
+}
+
+function loadGraphByName(name) {
+  if (name === "active") return JSON.parse(readActiveGraph());
+  validateLibraryName(name);
+  const graphPath = path.join(libraryEntryDir(name), "graph.json");
+  if (!fs.existsSync(graphPath)) {
+    console.error(`error: "${name}" not found in library`);
+    process.exit(1);
+  }
+  return JSON.parse(fs.readFileSync(graphPath, "utf8"));
+}
+
+function diffGraphs(nameA, nameB) {
+  const graphA = loadGraphByName(nameA);
+  const graphB = loadGraphByName(nameB);
+  const mermaidA = buildDiffMermaid(graphA, graphB, "left");
+  const mermaidB = buildDiffMermaid(graphB, graphA, "right");
+  const htmlPath = path.join(os.tmpdir(), `betterclaw-diff-${Date.now()}.html`);
+  fs.writeFileSync(htmlPath, buildDiffHtml(nameA, nameB, graphA, graphB, mermaidA, mermaidB));
+  console.log(`Diff: ${nameA} ↔ ${nameB}`);
+  console.log(`Opening: ${htmlPath}`);
+  const opener = process.platform === "darwin" ? "open" : "xdg-open";
+  spawn(opener, [htmlPath], { stdio: "ignore", detached: true }).unref();
+}
+
+function buildDiffMermaid(graph, other, side) {
+  // "side" not currently used but kept for future asymmetric highlighting.
+  void side;
+  const shortTools = (tools) =>
+    tools && tools.length > 0 ? tools.map((t) => t.replace(/^gmail_/, "")).join(" / ") : "—";
+  const otherNodeIds = new Set((other.nodes ?? []).map((n) => n.id));
+  const otherEdges = new Set((other.edges ?? []).map((e) => `${e.from}→${e.to}`));
+  const otherNodeMap = new Map((other.nodes ?? []).map((n) => [n.id, n]));
+
+  const lines = ["flowchart TD"];
+  for (const n of graph.nodes) {
+    const tagsAdded = !otherNodeIds.has(n.id);
+    const otherNode = otherNodeMap.get(n.id);
+    const toolsChanged =
+      otherNode && JSON.stringify(otherNode.allowed_tools) !== JSON.stringify(n.allowed_tools);
+    const diffLabel = tagsAdded
+      ? " 🆕"
+      : toolsChanged
+        ? " ✏️"
+        : "";
+    const purpose = (n.purpose || "").replace(/"/g, "&quot;").replace(/\n/g, " ");
+    const label = `<b>${n.id}${diffLabel}</b><br/>${purpose}<br/><i>tools: ${shortTools(n.allowed_tools)}</i>`;
+    lines.push(`  ${n.id}["${label}"]:::${tagsAdded ? "added" : toolsChanged ? "changed" : "same"}`);
+  }
+  lines.push(`  start((entry))`);
+  lines.push(`  start --> ${graph.entry}`);
+  for (const e of graph.edges) {
+    const key = `${e.from}→${e.to}`;
+    if (!otherEdges.has(key)) {
+      lines.push(`  ${e.from} ==>|🆕| ${e.to}`);
+    } else {
+      lines.push(`  ${e.from} --> ${e.to}`);
+    }
+  }
+  lines.push(`  classDef same fill:#f5f5f5,stroke:#aaa;`);
+  lines.push(`  classDef added fill:#cfe7c7,stroke:#2a7d2a,stroke-width:2px;`);
+  lines.push(`  classDef changed fill:#fff3cd,stroke:#d4a700,stroke-width:2px;`);
+  lines.push(`  classDef entryBadge fill:#eef,stroke:#36f,stroke-width:2px;`);
+  lines.push(`  class start entryBadge;`);
+  return lines.join("\n");
+}
+
+function buildDiffHtml(nameA, nameB, graphA, graphB, mermaidA, mermaidB) {
+  const summarize = (g) => {
+    const approvals = (g.requires_approval ?? []).join(", ") || "(none)";
+    return `${g.nodes.length} nodes · ${g.edges.length} edges · entry=<code>${escapeHtml(g.entry)}</code> · approvals: ${escapeHtml(approvals)}`;
+  };
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BetterClaw — Graph diff: ${escapeHtml(nameA)} ↔ ${escapeHtml(nameB)}</title>
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 0; padding: 2rem; background: #fafafa; color: #222; }
+    h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+    .sub { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
+    .legend { background: #fff; border: 1px solid #ddd; padding: 0.5rem 0.9rem; margin: 0 0 1.5rem; border-radius: 4px; font-size: 0.85rem; }
+    .legend span { display: inline-block; margin-right: 1rem; }
+    .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+    .pane { background: #fff; border: 1px solid #ddd; padding: 1rem 1.2rem; border-radius: 4px; }
+    .pane h2 { margin: 0 0 0.25rem; font-size: 1.1rem; }
+    .pane .meta { color: #666; font-size: 0.85rem; margin: 0 0 0.75rem; }
+    .mermaid { overflow: auto; padding: 0.5rem 0; }
+    code { background: #f0f0f0; padding: 0 0.25em; border-radius: 3px; font-family: ui-monospace, monospace; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <h1>Graph diff: ${escapeHtml(nameA)} ↔ ${escapeHtml(nameB)}</h1>
+  <p class="sub">Structural diff. Additions are green. Edited tool allowlists are yellow. New edges get a 🆕 label.</p>
+
+  <div class="legend">
+    <span>🟢 Added node</span>
+    <span>🟡 Changed allowed_tools</span>
+    <span>⚫ Unchanged</span>
+    <span>🆕 New edge</span>
+  </div>
+
+  <div class="panes">
+    <div class="pane">
+      <h2>${escapeHtml(nameA)}</h2>
+      <p class="meta">${summarize(graphA)}</p>
+      <pre class="mermaid">${mermaidA}</pre>
+    </div>
+    <div class="pane">
+      <h2>${escapeHtml(nameB)}</h2>
+      <p class="meta">${summarize(graphB)}</p>
+      <pre class="mermaid">${mermaidB}</pre>
+    </div>
+  </div>
+
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { useMaxWidth: false, curve: "basis" } });
+  </script>
+</body>
+</html>`;
+}
+
+async function publishToRemote(name, dest) {
+  validateLibraryName(name);
+  const dir = libraryEntryDir(name);
+  if (!fs.existsSync(dir)) {
+    console.error(`error: "${name}" not in library. Save it first with: betterclaw save ${name}`);
+    process.exit(1);
+  }
+  if (dest !== "gist") {
+    console.error(`error: only --to gist is supported right now`);
+    process.exit(1);
+  }
+  const ghCheck = spawnSync("gh", ["--version"], { encoding: "utf8" });
+  if (ghCheck.status !== 0) {
+    console.error(`error: \`gh\` CLI not found. Install it: https://cli.github.com/`);
+    process.exit(2);
+  }
+
+  const graphPath = path.join(dir, "graph.json");
+  const paraPath = path.join(dir, "paragraph.md");
+  const metaPath = path.join(dir, "meta.json");
+  const meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+
+  // Write a BetterClaw.md readme that explains what the gist contains.
+  const readmePath = path.join(dir, "BetterClaw.md");
+  const readme = `# BetterClaw workflow: ${name}
+
+Compiled by [BetterClaw](https://github.com/) on ${meta.saved_at}.
+
+- **${meta.nodes} nodes, ${meta.edges} edges**
+- Entry: \`${meta.entry}\`
+- Requires approval: ${meta.requires_approval?.join(", ") || "(none)"}
+
+## Install
+
+\`\`\`bash
+betterclaw fork <this-gist-url> ${name}
+betterclaw load ${name}
+openclaw agent --local --agent main -m "<your task>"
+\`\`\`
+
+## Source paragraph
+
+See \`paragraph.md\` in this gist.
+`;
+  fs.writeFileSync(readmePath, readme);
+
+  const filesToUpload = [graphPath];
+  if (fs.existsSync(paraPath)) filesToUpload.push(paraPath);
+  filesToUpload.push(metaPath, readmePath);
+
+  console.log(`Publishing "${name}" to a public gist…`);
+  const ghArgs = [
+    "gist",
+    "create",
+    "--public",
+    "--desc",
+    `BetterClaw workflow: ${name}`,
+    ...filesToUpload,
+  ];
+  const result = spawnSync("gh", ghArgs, { encoding: "utf8", stdio: ["inherit", "pipe", "pipe"] });
+  if (result.status !== 0) {
+    console.error(`error: gh gist create failed:`);
+    console.error(result.stderr);
+    process.exit(3);
+  }
+  const gistUrl = result.stdout.trim();
+  console.log(`Published: ${gistUrl}`);
+  console.log(`\nShare this URL. Recipients can install with:`);
+  console.log(`  betterclaw fork ${gistUrl} ${name}`);
+}
+
+// ---- existing helpers below ----
+
+function listPending() {
+  if (!fs.existsSync(RUN_LOG_PATH)) {
+    console.log("No active run.");
+    return;
+  }
+  const events = fs
+    .readFileSync(RUN_LOG_PATH, "utf8")
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => {
+      try { return JSON.parse(l); } catch { return null; }
+    })
+    .filter(Boolean);
+  const pending = new Map();
+  for (const e of events) {
+    if (e.type === "approval_pending") pending.set(e.id, e);
+    if (e.type === "approval_resolved") pending.delete(e.id);
+  }
+  if (pending.size === 0) {
+    console.log("No pending approvals.");
+    return;
+  }
+  for (const [id, e] of pending) {
+    console.log(`  ${id}  node=${e.node}  tool=${e.tool}  ts=${e.ts}`);
+    if (e.params && Object.keys(e.params).length > 0) {
+      const preview = JSON.stringify(e.params).slice(0, 200);
+      console.log(`         params: ${preview}${preview.length >= 200 ? "…" : ""}`);
+    }
+  }
+  console.log(`\nResolve with: betterclaw approve <id>   or   betterclaw deny <id>`);
+}
+
+function viewLastRun() {
+  if (!fs.existsSync(GRAPH_PATH)) {
+    console.error(`error: no graph compiled yet. Run \`betterclaw "<paragraph>"\` first.`);
+    process.exit(1);
+  }
+  if (!fs.existsSync(RUN_LOG_PATH) || fs.statSync(RUN_LOG_PATH).size === 0) {
+    console.error(
+      `error: no run log at ${RUN_LOG_PATH}\n` +
+        `       Run the agent once: \`openclaw agent --local --agent main -m "<task>"\``,
+    );
+    process.exit(1);
+  }
+
+  const graph = JSON.parse(fs.readFileSync(GRAPH_PATH, "utf8"));
+  const events = fs
+    .readFileSync(RUN_LOG_PATH, "utf8")
+    .split("\n")
+    .filter((l) => l.trim().length > 0)
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+
+  const allowEvents = events.filter((e) => e.type === "allow");
+  const deviationEvents = events.filter((e) => e.type === "deviation");
+  const visitedNodes = new Set(
+    allowEvents.flatMap((e) => [e.from_node, e.to_node]).filter(Boolean),
+  );
+  const traversedEdges = new Set();
+  for (const e of allowEvents) {
+    if (e.transitioned) traversedEdges.add(`${e.from_node}→${e.to_node}`);
+  }
+
+  const mermaid = buildReplayMermaid(graph, visitedNodes, traversedEdges, deviationEvents);
+  const htmlPath = writeReplayHtml(graph, events, mermaid, {
+    allowCount: allowEvents.length,
+    deviationCount: deviationEvents.length,
+  });
+  console.log(`Run replay: ${allowEvents.length} allowed, ${deviationEvents.length} deviation(s).`);
+  console.log(`Opening replay HTML: ${htmlPath}`);
+  const opener = process.platform === "darwin" ? "open" : "xdg-open";
+  spawn(opener, [htmlPath], { stdio: "ignore", detached: true }).unref();
+}
+
+async function startWatchServer() {
+  if (!fs.existsSync(GRAPH_PATH)) {
+    console.error(`error: no graph compiled yet. Run \`betterclaw "<paragraph>"\` first.`);
+    process.exit(1);
+  }
+
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, "http://localhost");
+    if (url.pathname === "/" || url.pathname === "/index.html") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(buildWatchPageHtml());
+      return;
+    }
+    if (url.pathname === "/state.json") {
+      const state = readCurrentState();
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(state));
+      return;
+    }
+    if (url.pathname === "/resolve" && req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        try {
+          const { id, decision } = JSON.parse(body);
+          if (!id || (decision !== "approve" && decision !== "deny")) {
+            res.writeHead(400, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "need { id, decision: 'approve' | 'deny' }" }));
+            return;
+          }
+          resolveApproval(id, decision);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: true, id, decision }));
+        } catch (err) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: String(err) }));
+        }
+      });
+      return;
+    }
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("not found");
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const url = `http://127.0.0.1:${port}/`;
+  console.log(`BetterClaw live view: ${url}`);
+  console.log("Leave this running. In another terminal:");
+  console.log("  openclaw agent --local --agent main -m \"<your task>\"");
+  console.log("Ctrl+C here to stop.");
+  const opener = process.platform === "darwin" ? "open" : "xdg-open";
+  spawn(opener, [url], { stdio: "ignore", detached: true }).unref();
+
+  await new Promise(() => {}); // run until Ctrl+C
+}
+
+function readCurrentState() {
+  const graph = JSON.parse(fs.readFileSync(GRAPH_PATH, "utf8"));
+  let events = [];
+  if (fs.existsSync(RUN_LOG_PATH)) {
+    events = fs
+      .readFileSync(RUN_LOG_PATH, "utf8")
+      .split("\n")
+      .filter((l) => l.trim().length > 0)
+      .map((l) => {
+        try { return JSON.parse(l); } catch { return null; }
+      })
+      .filter(Boolean);
+  }
+  return { graph, events, ts: Date.now() };
+}
+
+function buildWatchPageHtml() {
+  // A single page that polls /state.json and re-renders Mermaid + timeline.
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BetterClaw — Live run</title>
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; padding: 2rem; background: #fafafa; color: #222; }
+    h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+    .sub { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
+    .summary { background: #fff; border: 1px solid #ddd; padding: 0.9rem 1.1rem; margin: 0 0 1.5rem; border-radius: 4px; display: flex; gap: 2rem; align-items: center; }
+    .chip { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.85rem; font-weight: 600; }
+    .chip.allow { background: #cfe7c7; color: #1a5c1a; }
+    .chip.dev { background: #fde0e0; color: #8a0000; }
+    .chip.live { background: #1a5c1a; color: #fff; animation: pulse 1.6s infinite; }
+    .chip.pending { background: #fff3cd; color: #664d03; }
+    @keyframes pulse { 50% { opacity: 0.4; } }
+    .approval-banner { background: #fff3cd; border: 1px solid #d4a700; border-left: 4px solid #d4a700; padding: 1rem 1.2rem; margin: 0 0 1.5rem; border-radius: 4px; }
+    .approval-banner h3 { margin: 0 0 0.5rem; font-size: 1rem; color: #664d03; }
+    .approval-banner .params { background: #fff; padding: 0.5rem 0.75rem; border-radius: 3px; font-family: ui-monospace, monospace; font-size: 0.8rem; white-space: pre-wrap; max-height: 150px; overflow: auto; margin: 0.5rem 0; }
+    .approval-banner .buttons { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+    .approval-banner button { padding: 0.4rem 1rem; border: 0; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.9rem; }
+    .approval-banner button.approve { background: #2a7d2a; color: #fff; }
+    .approval-banner button.deny { background: #8a0000; color: #fff; }
+    .approval-banner button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .layout { display: grid; grid-template-columns: 1.3fr 1fr; gap: 1.5rem; }
+    .mermaid-wrap { background: #fff; border: 1px solid #ddd; padding: 1.5rem; border-radius: 4px; overflow: auto; min-height: 360px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.85rem; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; color: #444; }
+    tr.dev td { background: #fff7f7; }
+    tr.fresh td { background: #ffffd0; transition: background 2s; }
+    code { background: #f0f0f0; padding: 0 0.25em; border-radius: 3px; font-family: ui-monospace, monospace; }
+    .meta { color: #666; font-size: 0.85rem; margin-top: 1.5rem; text-align: center; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <h1>BetterClaw — Live run <span class="chip live" id="live-chip">LIVE</span></h1>
+  <p class="sub">Green = visited · bold edge = traversed · dashed red = attempted deviation.<br>Polling <code>/state.json</code> every 500ms.</p>
+
+  <div class="summary">
+    <span class="chip allow" id="allowChip">0 allowed</span>
+    <span class="chip dev" id="devChip">0 deviations</span>
+    <span id="graphMeta" style="color:#666;"></span>
+  </div>
+
+  <div id="approvals"></div>
+
+  <div class="layout">
+    <div class="mermaid-wrap" id="diagram"></div>
+    <div>
+      <table>
+        <thead><tr><th>time</th><th>node</th><th>tool</th><th>detail</th></tr></thead>
+        <tbody id="timeline"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="meta" id="lastUpdate">—</p>
+
+<script>
+  mermaid.initialize({ startOnLoad: false, theme: "default", flowchart: { useMaxWidth: false, curve: "basis" } });
+
+  let lastEventCount = -1;
+  let lastDiagramSig = "";
+  let renderSeq = 0;
+
+  async function tick() {
+    try {
+      const res = await fetch("/state.json", { cache: "no-store" });
+      if (!res.ok) return;
+      const state = await res.json();
+      await render(state);
+    } catch (err) {
+      // server might be starting up or restarting — retry silently
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  function shortTools(ts) {
+    if (!ts || ts.length === 0) return "—";
+    return ts.map(t => t.replace(/^gmail_/,"")).join(" / ");
+  }
+
+  async function render(state) {
+    const { graph, events } = state;
+    const allow = events.filter(e => e.type === "allow");
+    const dev = events.filter(e => e.type === "deviation");
+
+    document.getElementById("allowChip").textContent = allow.length + " allowed";
+    document.getElementById("devChip").textContent = dev.length + " deviation" + (dev.length === 1 ? "" : "s");
+    document.getElementById("graphMeta").innerHTML = "entry: <code>" + escapeHtml(graph.entry) + "</code> · " + graph.nodes.length + " nodes · " + graph.edges.length + " edges";
+
+    // Collect pending approvals (pending minus resolved).
+    const pendingMap = new Map();
+    for (const e of events) {
+      if (e.type === "approval_pending") pendingMap.set(e.id, e);
+      if (e.type === "approval_resolved") pendingMap.delete(e.id);
+    }
+    renderApprovals([...pendingMap.values()]);
+
+    // Mermaid signature — only re-render when it changes (avoid flicker)
+    const visited = new Set(allow.flatMap(e => [e.from_node, e.to_node]).filter(Boolean));
+    const traversed = new Set();
+    for (const e of allow) if (e.transitioned) traversed.add(e.from_node + "→" + e.to_node);
+    const sig = JSON.stringify({
+      g: graph,
+      v: [...visited].sort(),
+      t: [...traversed].sort(),
+      d: dev.map(d => ({ n: d.from_node, t: d.attempted_tool }))
+    });
+    if (sig !== lastDiagramSig) {
+      lastDiagramSig = sig;
+      const mermaid_src = buildMermaidSource(graph, visited, traversed, dev);
+      const id = "diagram-svg-" + (++renderSeq);
+      try {
+        const out = await mermaid.render(id, mermaid_src);
+        document.getElementById("diagram").innerHTML = out.svg;
+      } catch (err) {
+        document.getElementById("diagram").textContent = "mermaid render error: " + err.message;
+      }
+    }
+
+    // Timeline — highlight new rows briefly
+    const tbody = document.getElementById("timeline");
+    const rowsHtml = events
+      .filter(e => e.type === "allow" || e.type === "deviation")
+      .map((e, i) => {
+        const ts = e.ts ? e.ts.split("T")[1].slice(0, 12) : "";
+        const fresh = (i >= lastEventCount && lastEventCount >= 0) ? " fresh" : "";
+        if (e.type === "deviation") {
+          return "<tr class=\\"dev" + fresh + "\\"><td>" + ts + "</td><td><code>" + escapeHtml(e.from_node ?? "") + "</code></td><td>❌ <code>" + escapeHtml(e.attempted_tool ?? "") + "</code></td><td>retry " + e.retry + "/" + e.retry_limit + " — " + escapeHtml(String(e.reason ?? "").slice(0, 120)) + "…</td></tr>";
+        }
+        const arrow = e.transitioned
+          ? escapeHtml(e.from_node) + " → " + escapeHtml(e.to_node)
+          : "(stay in " + escapeHtml(e.from_node) + ")";
+        return "<tr class=\\"" + fresh.trim() + "\\"><td>" + ts + "</td><td><code>" + escapeHtml(e.to_node ?? e.from_node ?? "") + "</code></td><td>✓ <code>" + escapeHtml(e.tool ?? "") + "</code></td><td>" + arrow + "</td></tr>";
+      })
+      .join("");
+    tbody.innerHTML = rowsHtml;
+    lastEventCount = allow.length + dev.length;
+
+    document.getElementById("lastUpdate").textContent = "Last poll: " + new Date().toLocaleTimeString();
+  }
+
+  function buildMermaidSource(graph, visitedNodes, traversedEdges, deviationEvents) {
+    const devsByNode = new Map();
+    for (const d of deviationEvents) {
+      if (!devsByNode.has(d.from_node)) devsByNode.set(d.from_node, []);
+      devsByNode.get(d.from_node).push(d.attempted_tool);
+    }
+    const lines = ["flowchart TD"];
+    for (const n of graph.nodes) {
+      const purpose = (n.purpose || "").replace(/"/g,"&quot;").replace(/\\n/g," ");
+      const devs = devsByNode.get(n.id);
+      const devSuffix = devs ? "<br/><b style='color:#c00;'>deviations: " + devs.length + "</b>" : "";
+      const label = "<b>" + n.id + "</b><br/>" + purpose + "<br/><i>tools: " + shortTools(n.allowed_tools) + "</i>" + devSuffix;
+      lines.push("  " + n.id + "[\\"" + label + "\\"]");
+    }
+    lines.push("  start((entry))");
+    lines.push("  start --> " + graph.entry);
+    for (const e of graph.edges) {
+      const key = e.from + "→" + e.to;
+      lines.push("  " + e.from + (traversedEdges.has(key) ? " ==> " : " --> ") + e.to);
+    }
+    let p = 0;
+    for (const d of deviationEvents) {
+      const tool = (d.attempted_tool || "unknown").replace(/^gmail_/,"");
+      lines.push("  devghost" + p + "([\\"❌ " + tool + "<br/>(deviation)\\"]):::devbox");
+      lines.push("  " + d.from_node + " -.-> devghost" + p);
+      p++;
+    }
+    lines.push("  classDef visited fill:#cfe7c7,stroke:#2a7d2a,stroke-width:2px;");
+    lines.push("  classDef devbox fill:#fde0e0,stroke:#c00,stroke-width:1px,stroke-dasharray:4 2;");
+    lines.push("  classDef entryBadge fill:#eef,stroke:#36f,stroke-width:2px;");
+    lines.push("  class start entryBadge;");
+    const visitedList = [...visitedNodes].filter(n => graph.nodes.some(gn => gn.id === n));
+    if (visitedList.length > 0) lines.push("  class " + visitedList.join(",") + " visited;");
+    return lines.join("\\n");
+  }
+
+  function renderApprovals(pending) {
+    const host = document.getElementById("approvals");
+    if (pending.length === 0) { host.innerHTML = ""; return; }
+    host.innerHTML = pending.map(p => {
+      const paramsStr = p.params ? JSON.stringify(p.params, null, 2) : "(no params)";
+      return "<div class=\\"approval-banner\\" data-id=\\"" + escapeHtml(p.id) + "\\">" +
+        "<h3>⏸ Waiting for approval: <code>" + escapeHtml(p.tool) + "</code> at <code>" + escapeHtml(p.node) + "</code></h3>" +
+        "<div>id: <code>" + escapeHtml(p.id) + "</code></div>" +
+        "<div class=\\"params\\">" + escapeHtml(paramsStr) + "</div>" +
+        "<div class=\\"buttons\\">" +
+          "<button class=\\"approve\\" onclick=\\"resolveApproval('" + p.id + "','approve',this)\\">Approve</button>" +
+          "<button class=\\"deny\\" onclick=\\"resolveApproval('" + p.id + "','deny',this)\\">Deny</button>" +
+        "</div>" +
+      "</div>";
+    }).join("");
+  }
+
+  async function resolveApproval(id, decision, btn) {
+    const card = btn.closest(".approval-banner");
+    card.querySelectorAll("button").forEach(b => b.disabled = true);
+    try {
+      const res = await fetch("/resolve", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, decision }),
+      });
+      if (!res.ok) {
+        card.querySelectorAll("button").forEach(b => b.disabled = false);
+        alert("Resolve failed: " + res.status);
+      }
+      // The agent will pick it up on its next 200ms poll; the next tick() here
+      // removes this banner from the UI when the resolved event arrives.
+    } catch (err) {
+      card.querySelectorAll("button").forEach(b => b.disabled = false);
+      alert("Resolve failed: " + err.message);
+    }
+  }
+  window.resolveApproval = resolveApproval;
+
+  tick();
+  setInterval(tick, 500);
+</script>
+</body>
+</html>`;
+}
+
+function buildReplayMermaid(graph, visitedNodes, traversedEdges, deviationEvents) {
+  const shortTools = (tools) =>
+    tools.length > 0 ? tools.map((t) => t.replace(/^gmail_/, "")).join(" / ") : "—";
+  const deviationsByNode = new Map();
+  for (const d of deviationEvents) {
+    if (!deviationsByNode.has(d.from_node)) deviationsByNode.set(d.from_node, []);
+    deviationsByNode.get(d.from_node).push(d.attempted_tool);
+  }
+
+  const lines = ["flowchart TD"];
+  for (const n of graph.nodes) {
+    const purpose = n.purpose.replace(/"/g, "&quot;").replace(/\n/g, " ");
+    const devs = deviationsByNode.get(n.id);
+    const devSuffix = devs
+      ? `<br/><b style='color:#c00;'>deviations: ${devs.length}</b>`
+      : "";
+    const label = `<b>${n.id}</b><br/>${purpose}<br/><i>tools: ${shortTools(n.allowed_tools)}</i>${devSuffix}`;
+    lines.push(`  ${n.id}["${label}"]`);
+  }
+  lines.push(`  start((entry))`);
+  lines.push(`  start --> ${graph.entry}`);
+
+  // Edges: bold if traversed, else normal
+  for (const e of graph.edges) {
+    const key = `${e.from}→${e.to}`;
+    if (traversedEdges.has(key)) {
+      lines.push(`  ${e.from} ==> ${e.to}`);
+    } else {
+      lines.push(`  ${e.from} --> ${e.to}`);
+    }
+  }
+
+  // Deviation ghost arrows — dashed red from the current node to a phantom.
+  let phantomIdx = 0;
+  for (const d of deviationEvents) {
+    const phantom = `devghost${phantomIdx++}`;
+    const tool = (d.attempted_tool || "unknown").replace(/^gmail_/, "");
+    lines.push(
+      `  ${phantom}(["❌ ${tool}<br/>(deviation)"]):::devbox`,
+    );
+    lines.push(`  ${d.from_node} -.-> ${phantom}`);
+  }
+
+  // Styling
+  lines.push(`  classDef visited fill:#cfe7c7,stroke:#2a7d2a,stroke-width:2px;`);
+  lines.push(`  classDef devbox fill:#fde0e0,stroke:#c00,stroke-width:1px,stroke-dasharray:4 2;`);
+  lines.push(`  classDef entryBadge fill:#eef,stroke:#36f,stroke-width:2px;`);
+  lines.push(`  class start entryBadge;`);
+  const visitedList = [...visitedNodes].filter((n) => graph.nodes.some((gn) => gn.id === n));
+  if (visitedList.length > 0) {
+    lines.push(`  class ${visitedList.join(",")} visited;`);
+  }
+  return lines.join("\n");
+}
+
+function writeReplayHtml(graph, events, mermaid, counts) {
+  const outPath = path.join(os.tmpdir(), `betterclaw-replay-${Date.now()}.html`);
+  const timelineRows = events
+    .filter((e) => e.type === "allow" || e.type === "deviation")
+    .map((e) => {
+      const ts = e.ts?.split("T")[1]?.slice(0, 12) ?? "";
+      if (e.type === "deviation") {
+        return `<tr class="dev"><td>${ts}</td><td><code>${escapeHtml(
+          e.from_node ?? "",
+        )}</code></td><td>❌ <code>${escapeHtml(
+          e.attempted_tool ?? "",
+        )}</code></td><td>retry ${e.retry}/${e.retry_limit} — ${escapeHtml(
+          (e.reason ?? "").slice(0, 120),
+        )}…</td></tr>`;
+      }
+      const arrow = e.transitioned
+        ? `${escapeHtml(e.from_node)} → ${escapeHtml(e.to_node)}`
+        : `(stay in ${escapeHtml(e.from_node)})`;
+      return `<tr><td>${ts}</td><td><code>${escapeHtml(
+        e.to_node ?? e.from_node ?? "",
+      )}</code></td><td>✓ <code>${escapeHtml(e.tool ?? "")}</code></td><td>${arrow}</td></tr>`;
+    })
+    .join("\n");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BetterClaw — Run replay</title>
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; padding: 2rem; background: #fafafa; color: #222; }
+    h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+    .sub { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
+    .summary { background: #fff; border: 1px solid #ddd; padding: 0.9rem 1.1rem; margin: 0 0 1.5rem; border-radius: 4px; display: flex; gap: 2rem; align-items: center; }
+    .chip { display: inline-block; padding: 0.15rem 0.55rem; border-radius: 999px; font-size: 0.85rem; font-weight: 600; }
+    .chip.allow { background: #cfe7c7; color: #1a5c1a; }
+    .chip.dev { background: #fde0e0; color: #8a0000; }
+    .layout { display: grid; grid-template-columns: 1.3fr 1fr; gap: 1.5rem; }
+    .mermaid { background: #fff; border: 1px solid #ddd; padding: 1.5rem; border-radius: 4px; overflow: auto; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; }
+    th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.85rem; vertical-align: top; }
+    th { background: #f5f5f5; font-weight: 600; color: #444; }
+    tr.dev td { background: #fff7f7; }
+    code { background: #f0f0f0; padding: 0 0.25em; border-radius: 3px; font-family: ui-monospace, monospace; }
+    .meta { color: #666; font-size: 0.85rem; margin-top: 1.5rem; text-align: center; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <h1>BetterClaw — Run replay</h1>
+  <p class="sub">Green = visited node · bold edge = traversed · dashed red = attempted deviation.</p>
+
+  <div class="summary">
+    <span class="chip allow">${counts.allowCount} allowed</span>
+    <span class="chip dev">${counts.deviationCount} deviation${counts.deviationCount === 1 ? "" : "s"}</span>
+    <span style="color:#666;">entry: <code>${escapeHtml(graph.entry)}</code> · ${graph.nodes.length} nodes · ${graph.edges.length} edges</span>
+  </div>
+
+  <div class="layout">
+    <pre class="mermaid">${mermaid}</pre>
+    <div>
+      <table>
+        <thead><tr><th>time</th><th>node</th><th>tool</th><th>detail</th></tr></thead>
+        <tbody>
+${timelineRows}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="meta">Generated ${new Date().toISOString()}</p>
+
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { useMaxWidth: false, curve: "basis" } });
+  </script>
+</body>
+</html>`;
+  fs.writeFileSync(outPath, html);
+  return outPath;
+}
+
+function preflightCheck() {
+  if (!fs.existsSync(PLUGIN_ROOT)) {
+    console.error(`error: plugin root missing: ${PLUGIN_ROOT}`);
+    process.exit(2);
+  }
+  const claudeCheck = spawnSync("claude", ["--version"], { encoding: "utf8" });
+  if (claudeCheck.status !== 0) {
+    console.error(`error: \`claude\` CLI not found on PATH. Install and auth first.`);
+    process.exit(2);
+  }
+}
+
+function detectVertical(paragraph) {
+  const p = paragraph.toLowerCase();
+  // Explicit override: "vertical: shopping" anywhere in the paragraph.
+  const explicit = p.match(/vertical[:=]\s*(email|shopping|sales|travel)/);
+  if (explicit) return explicit[1];
+
+  const hit = (...terms) => terms.some((t) => p.includes(t));
+  // Check specific verticals first; "email" is the catch-all fallback because
+  // "email" as a bare keyword is too common (e.g. "cold email" is sales).
+  if (hit("lead", "prospect", "outreach", "crm", "cold email", "sdr", "cold outreach", " sales "))
+    return "sales";
+  if (hit("flight", "hotel", "travel ", "trip ", "airfare", "booking", "itinerary", "airport"))
+    return "travel";
+  if (hit("wireless mouse", "headphones", "shop ", "buy ", "purchase", "product", "catalog", "price compare", "electronics store", "online store", "smartwatch", "add to cart"))
+    return "shopping";
+  if (hit("inbox", "gmail", "draft reply", "triage my inbox", "newsletters", "my email", "my inbox", "emails from"))
+    return "email";
+  // default catch-all: email is our most mature vertical
+  return "email";
+}
+
+function buildCompilePrompt(paragraph, verticalId) {
+  const g = VERTICAL_GUIDANCE[verticalId];
+  if (!g) {
+    throw new Error(`unknown vertical: ${verticalId}`);
+  }
+  return `You are a workflow compiler for the BetterClaw agent-guardrail system.
+
+The target vertical is: **${verticalId}** — ${g.description}
+
+SCHEMA (return exactly this shape, nothing else):
+{
+  "vertical": "${verticalId}",
+  "entry": "<node_id>",
+  "max_reconsider_retries": 3,
+  "requires_approval": ["<tool_name>", ...],
+  "nodes": [
+    { "id": "<id>", "purpose": "<human-readable sentence>", "allowed_tools": ["..."] }
+  ],
+  "edges": [
+    { "from": "<node_id>", "to": "<node_id>" }
+  ]
+}
+
+requires_approval lists tools that require human approval mid-run. Include a tool here if the paragraph implies manual review — phrases like "let me approve", "ask me first", "check with me" — especially around drafting, sending, purchasing, or any irreversible action. Empty array [] if no approval needed.
+
+AVAILABLE TOOLS for vertical "${verticalId}":
+${g.tool_descriptions}
+
+RULES:
+${g.rules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
+${g.rules.length + 1}. Keep the graph small: 2 to 5 nodes.
+${g.rules.length + 2}. Every node must have at least one allowed_tool from the list above.
+${g.rules.length + 3}. Include return edges so the agent can loop back (e.g. after one item, handle the next).
+${g.rules.length + 4}. Node ids: snake_case and descriptive (e.g. "list_inbox", "compare_flights"), NOT "node1".
+${g.rules.length + 5}. The "purpose" field on each node must be a concrete human-readable sentence visible in the graph visualization.
+
+CRITICAL: Output ONLY the JSON object. No markdown code fences. No explanation before or after.
+
+USER PARAGRAPH:
+${paragraph}
+
+JSON:`;
+}
+
+function compileWithClaude(prompt) {
+  console.log("Compiling with Claude (claude-cli, opus)...");
+  const result = spawnSync("claude", ["-p", prompt, "--output-format", "text"], {
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    console.error("claude CLI failed:");
+    console.error(result.stderr);
+    process.exit(3);
+  }
+  const raw = result.stdout;
+  // Extract the first JSON object from the output (Claude sometimes adds
+  // explanation despite instructions).
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    console.error("No JSON found in Claude response:");
+    console.error(raw);
+    process.exit(4);
+  }
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch (err) {
+    console.error(`Invalid JSON from compiler: ${err.message}`);
+    console.error("\nRaw:");
+    console.error(jsonMatch[0]);
+    process.exit(5);
+  }
+}
+
+async function renderAndConfirm(graph, paragraph) {
+  const mermaid = buildMermaid(graph);
+  const headless = !process.env.DISPLAY && !process.env.BROWSER;
+
+  if (headless) {
+    console.log("\n--- Workflow diagram (Mermaid) ---");
+    console.log(mermaid);
+    console.log("--- end ---\n");
+  } else {
+    const htmlPath = writeHtml(graph, paragraph, mermaid);
+    console.log(`\nOpening graph in your browser: ${htmlPath}`);
+    const opener = process.platform === "darwin" ? "open" : "xdg-open";
+    spawn(opener, [htmlPath], { stdio: "ignore", detached: true }).unref();
+  }
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise((resolve) =>
+    rl.question("\nApprove this workflow? (y/N): ", (a) => {
+      rl.close();
+      resolve(a.trim().toLowerCase());
+    }),
+  );
+  return answer === "y" || answer === "yes";
+}
+
+function buildMermaid(graph) {
+  const lines = ["flowchart TD"];
+  const shortTools = (tools) =>
+    tools.length > 0 ? tools.map((t) => t.replace(/^gmail_/, "")).join(" / ") : "—";
+
+  // Nodes: "id[purpose<br/>tools]"
+  for (const n of graph.nodes) {
+    const purpose = n.purpose.replace(/"/g, "&quot;").replace(/\n/g, " ");
+    const label = `<b>${n.id}</b><br/>${purpose}<br/><i>tools: ${shortTools(n.allowed_tools)}</i>`;
+    lines.push(`  ${n.id}["${label}"]`);
+  }
+  // Entry marker
+  lines.push(`  start((entry))`);
+  lines.push(`  start --> ${graph.entry}`);
+  // Edges
+  for (const e of graph.edges) {
+    lines.push(`  ${e.from} --> ${e.to}`);
+  }
+  // Style entry node
+  lines.push(`  classDef entryBadge fill:#eef,stroke:#36f,stroke-width:2px;`);
+  lines.push(`  class start entryBadge;`);
+  return lines.join("\n");
+}
+
+function writeHtml(graph, paragraph, mermaid) {
+  const outPath = path.join(os.tmpdir(), `betterclaw-graph-${Date.now()}.html`);
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BetterClaw — Workflow preview</title>
+  <style>
+    body { font: 14px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif; margin: 0; padding: 2rem; background: #fafafa; color: #222; }
+    h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
+    .sub { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
+    .paragraph { background: #fff; border: 1px solid #ddd; border-left: 4px solid #36f; padding: 0.9rem 1.1rem; margin: 0 0 1.5rem; border-radius: 4px; white-space: pre-wrap; }
+    .mermaid { background: #fff; border: 1px solid #ddd; padding: 1.5rem; border-radius: 4px; overflow: auto; }
+    .meta { color: #666; font-size: 0.85rem; margin-top: 1.5rem; text-align: center; }
+    kbd { background: #eee; border-radius: 3px; padding: 0 0.35em; font-family: ui-monospace, monospace; border: 1px solid #ccc; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+  <h1>BetterClaw — Workflow preview</h1>
+  <p class="sub">This is how your paragraph was compiled. Review the nodes, edges, and allowed tools — if anything is wrong, close this tab, answer <kbd>n</kbd> in the terminal, and re-run with a clearer paragraph.</p>
+
+  <div class="paragraph">${escapeHtml(paragraph)}</div>
+
+  <pre class="mermaid">${mermaid}</pre>
+
+  <p class="meta">Graph: ${graph.nodes.length} nodes · ${graph.edges.length} edges · entry = <code>${escapeHtml(graph.entry)}</code> · max retries = ${graph.max_reconsider_retries ?? 3}</p>
+
+  <script>
+    mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { useMaxWidth: false, curve: "basis" } });
+  </script>
+</body>
+</html>`;
+  fs.writeFileSync(outPath, html);
+  return outPath;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function validateGraph(graph) {
+  const errors = [];
+
+  if (typeof graph.entry !== "string") errors.push("entry must be a string");
+  if (!Array.isArray(graph.nodes) || graph.nodes.length === 0)
+    errors.push("nodes must be a non-empty array");
+  if (!Array.isArray(graph.edges)) errors.push("edges must be an array");
+
+  if (errors.length > 0) {
+    console.error("Graph validation failed:");
+    for (const e of errors) console.error("  -", e);
+    process.exit(6);
+  }
+
+  const nodeIds = new Set(graph.nodes.map((n) => n.id));
+
+  // Allowed tools depend on the graph's declared vertical. Default to email
+  // for back-compat with older graphs that predate the vertical field.
+  const vId = graph.vertical ?? "email";
+  const vGuidance = VERTICAL_GUIDANCE[vId];
+  if (!vGuidance) errors.push(`unknown vertical "${vId}"`);
+  const allowedTools = new Set(vGuidance ? vGuidance.tools : []);
+
+  for (const n of graph.nodes) {
+    if (typeof n.id !== "string") errors.push(`node missing id: ${JSON.stringify(n)}`);
+    if (typeof n.purpose !== "string") errors.push(`node "${n.id}" missing purpose`);
+    if (!Array.isArray(n.allowed_tools) || n.allowed_tools.length === 0)
+      errors.push(`node "${n.id}" has empty allowed_tools`);
+    for (const t of n.allowed_tools ?? []) {
+      if (!allowedTools.has(t))
+        errors.push(`node "${n.id}" references unknown tool "${t}" (allowed: ${[...allowedTools].join(", ")})`);
+    }
+  }
+
+  if (!nodeIds.has(graph.entry)) errors.push(`entry "${graph.entry}" is not a node id`);
+
+  for (const e of graph.edges) {
+    if (!nodeIds.has(e.from)) errors.push(`edge from unknown node "${e.from}"`);
+    if (!nodeIds.has(e.to)) errors.push(`edge to unknown node "${e.to}"`);
+  }
+
+  if (graph.requires_approval !== undefined) {
+    if (!Array.isArray(graph.requires_approval)) {
+      errors.push("requires_approval must be an array of tool names");
+    } else {
+      for (const t of graph.requires_approval) {
+        if (!allowedTools.has(t))
+          errors.push(`requires_approval references unknown tool "${t}"`);
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error("Graph validation failed:");
+    for (const e of errors) console.error("  -", e);
+    console.error("\nGraph:");
+    console.error(JSON.stringify(graph, null, 2));
+    process.exit(7);
+  }
+}

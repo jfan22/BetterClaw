@@ -1,0 +1,20 @@
+{
+  "name": "betterclaw-project",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Workflow-enforced AI agents for OpenClaw. Paragraph-in, graph-out, workflow-enforced.",
+  "bin": {
+    "betterclaw": "./cli/betterclaw"
+  },
+  "scripts": {
+    "setup": "npm install --prefix plugins/betterclaw",
+    "install-plugin": "openclaw plugins install $PWD/plugins/betterclaw --link --dangerously-force-unsafe-install",
+    "doctor": "./cli/betterclaw doctor"
+  },
+  "workspaces": [
+    "plugins/betterclaw"
+  ],
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,25 @@
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log
+package-lock.json
+
+# Runtime state the plugin writes during an agent turn
+plugins/betterclaw/active-graph.json
+plugins/betterclaw/active-paragraph.md
+plugins/betterclaw/run.jsonl
+plugins/betterclaw/approvals/
+
+# Day-1 scaffolding — kept on disk locally as a disabled OpenClaw bundle,
+# but not something we want to track here.
+plugins/gmail-bundle/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.bak
+
+# Transient Claude Code assets
+.claude/
