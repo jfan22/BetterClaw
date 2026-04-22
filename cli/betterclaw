@@ -424,7 +424,7 @@ if (args[0] === "approve" || args[0] === "deny") {
     console.error(`Usage: betterclaw ${decision} <id>`);
     process.exit(1);
   }
-  resolveApproval(id, decision);
+  await resolveApproval(id, decision);
   process.exit(0);
 }
 
@@ -1326,19 +1326,226 @@ function showApproval(idOrFragment) {
   }
 }
 
-function resolveApproval(id, decision) {
+async function resolveApproval(id, decision) {
   if (!/^[a-z0-9-]+$/i.test(id)) {
     console.error("  " + deny("✗") + "  invalid id " + gray(id));
     process.exit(1);
   }
   fs.mkdirSync(APPROVALS_DIR, { recursive: true });
   const filename = decision === "approve" ? `${id}.approved` : `${id}.denied`;
-  const target = path.join(APPROVALS_DIR, filename);
-  fs.writeFileSync(target, String(Date.now()));
-  const verb = decision === "approve" ? allow("Approved") : deny("Denied");
+  fs.writeFileSync(path.join(APPROVALS_DIR, filename), String(Date.now()));
+
+  // Look up the pending record so we can do the out-of-band dispatch if approved.
+  const { pending } = loadPendingApprovals();
+  const record = pending.get(id) || findPendingByPrefix(id);
+
+  if (!record) {
+    // No pending record — still write the sentinel in case the plugin is
+    // polling for it (legacy in-band wait path). Just report and exit.
+    const verb = decision === "approve" ? allow("Approved") : deny("Denied");
+    console.log();
+    console.log(`  ${verb} ${ui.chip(id)} ${dim("— no matching pending record found (sentinel written).")}`);
+    console.log();
+    return;
+  }
+
+  if (decision === "deny") {
+    appendRunEvent({
+      ts: new Date().toISOString(),
+      type: "approval_resolved",
+      id: record.id,
+      decision: "denied",
+    });
+    console.log();
+    console.log(`  ${deny("Denied")} ${ui.chip(record.id)} ${dim("— tool will not be dispatched.")}`);
+    console.log();
+    return;
+  }
+
+  // APPROVE: dispatch the tool call out-of-band against the real backend.
+  await dispatchApprovedTool(record);
+}
+
+function findPendingByPrefix(idPrefix) {
+  const { pending } = loadPendingApprovals();
+  for (const [id, record] of pending) {
+    if (id.startsWith(idPrefix)) return record;
+  }
+  return null;
+}
+
+function appendRunEvent(event) {
+  if (!fs.existsSync(RUN_LOG_PATH)) return;
+  try {
+    fs.appendFileSync(RUN_LOG_PATH, JSON.stringify(event) + "\n");
+  } catch {}
+}
+
+async function dispatchApprovedTool(record) {
   console.log();
-  console.log(`  ${verb} ${ui.chip(id)} ${dim("— agent will resume shortly.")}`);
+  console.log(`  ${allow("Approved")} ${ui.chip(record.id)} ${dim("— dispatching " + record.tool + "…")}`);
+
+  const approvedTs = new Date().toISOString();
+  appendRunEvent({
+    ts: approvedTs,
+    type: "approval_resolved",
+    id: record.id,
+    decision: "approved",
+  });
+
+  const result = await callBackend(record);
+  const endTs = new Date().toISOString();
+
+  if (result.ok) {
+    appendRunEvent({
+      ts: endTs,
+      type: "async_dispatch",
+      id: record.id,
+      tool: record.tool,
+      status: "success",
+      result_summary: result.summary,
+    });
+    console.log(`  ${allow("✓")}  ${bold(record.tool)} ${dim("dispatched:")}`);
+    if (result.summary) {
+      for (const line of result.summary.split("\n")) {
+        console.log("     " + gray(line));
+      }
+    }
+    if (result.next_hint) {
+      console.log();
+      console.log("  " + dim(result.next_hint));
+    }
+  } else {
+    appendRunEvent({
+      ts: endTs,
+      type: "async_dispatch",
+      id: record.id,
+      tool: record.tool,
+      status: "error",
+      error: result.error,
+    });
+    console.log(`  ${deny("✗")}  ${bold(record.tool)} ${dim("dispatch failed:")}`);
+    console.log("     " + deny(result.error));
+  }
   console.log();
+}
+
+// Backend router: which dispatch strategy for which tool. Reads the tool
+// name from the pending record and picks the right one. Expandable without
+// touching the plugin (tool contracts stay the same).
+async function callBackend(record) {
+  if (record.tool === "gmail_draft") {
+    return await dispatchToGmailMcp("draft_email", record.params);
+  }
+  // Stub-backed tools (sales, travel) don't need a real remote call — the
+  // original plugin dispatch would've just returned stubbed content. We
+  // simulate by reporting "approved without external side effect." The
+  // agent can't see this (its turn is over), but the run log captures it.
+  return {
+    ok: true,
+    summary: `Approved (stub-backed tool — no external side effect). Params recorded in run.jsonl.`,
+    next_hint: `See: betterclaw show ${record.id}`,
+  };
+}
+
+async function dispatchToGmailMcp(toolName, params) {
+  // One-shot Gmail MCP call. Spawns a fresh child, performs initialize +
+  // tools/call, captures the response, shuts down cleanly.
+  return new Promise((resolve) => {
+    const child = spawn("npx", ["-y", "@gongrzhe/server-gmail-autoauth-mcp"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env },
+    });
+
+    let buffer = "";
+    let finished = false;
+    const pending = new Map();
+    let nextId = 1;
+
+    const finish = (result) => {
+      if (finished) return;
+      finished = true;
+      try { child.stdin.end(); } catch {}
+      try { child.kill("SIGTERM"); } catch {}
+      resolve(result);
+    };
+
+    const send = (method, params, isNotification = false) => {
+      const id = isNotification ? undefined : nextId++;
+      const payload = { jsonrpc: "2.0", method };
+      if (id !== undefined) payload.id = id;
+      if (params !== undefined) payload.params = params;
+      const line = JSON.stringify(payload) + "\n";
+      return new Promise((res, rej) => {
+        if (!isNotification) pending.set(id, { resolve: res, reject: rej });
+        child.stdin.write(line, (err) => {
+          if (err) {
+            if (!isNotification) pending.delete(id);
+            rej(err);
+          }
+          if (isNotification) res();
+        });
+      });
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk;
+      let idx;
+      while ((idx = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.id !== undefined && pending.has(msg.id)) {
+          const { resolve: res, reject: rej } = pending.get(msg.id);
+          pending.delete(msg.id);
+          if (msg.error) rej(new Error(`MCP error: ${JSON.stringify(msg.error)}`));
+          else res(msg.result);
+        }
+      }
+    });
+
+    child.stderr.on("data", (chunk) => {
+      // Gmail MCP logs to stderr; don't pollute our output.
+      void chunk;
+    });
+
+    child.on("error", (err) => finish({ ok: false, error: `spawn error: ${err.message}` }));
+    child.on("exit", (code, signal) => {
+      if (!finished) {
+        finish({ ok: false, error: `gmail MCP exited early (code=${code} signal=${signal})` });
+      }
+    });
+
+    (async () => {
+      try {
+        await send("initialize", {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "betterclaw-cli", version: "0.1.0" },
+        });
+        await send("notifications/initialized", {}, true);
+        const result = await send("tools/call", { name: toolName, arguments: params ?? {} });
+        // Extract the Gmail MCP's human-readable summary from the content blocks.
+        const textParts = (result?.content ?? [])
+          .filter((c) => c.type === "text")
+          .map((c) => c.text)
+          .join("\n");
+        finish({
+          ok: !result?.isError,
+          summary: textParts || "(no content returned)",
+          next_hint: toolName === "draft_email"
+            ? "Open your Gmail Drafts folder to review."
+            : null,
+          error: result?.isError ? textParts : undefined,
+        });
+      } catch (err) {
+        finish({ ok: false, error: err.message || String(err) });
+      }
+    })();
+  });
 }
 
 function viewLastRun() {
@@ -1413,7 +1620,7 @@ async function startWatchServer() {
     if (url.pathname === "/resolve" && req.method === "POST") {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
-      req.on("end", () => {
+      req.on("end", async () => {
         try {
           const { id, decision } = JSON.parse(body);
           if (!id || (decision !== "approve" && decision !== "deny")) {
@@ -1421,7 +1628,7 @@ async function startWatchServer() {
             res.end(JSON.stringify({ error: "need { id, decision: 'approve' | 'deny' }" }));
             return;
           }
-          resolveApproval(id, decision);
+          await resolveApproval(id, decision);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, id, decision }));
         } catch (err) {

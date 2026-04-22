@@ -143,61 +143,57 @@ export default definePluginEntry({
         : false;
 
       if (requiresApproval) {
-        // Dedupe: if this exact tool+params is already in flight, await that
-        // same promise instead of creating a new approval id. Fixes the
-        // "claude CLI retries → pile of duplicate pending approvals" bug.
+        // v0.2 approval seam: the plugin VM only lives as long as the agent
+        // turn. Blocking the hook on an approval that may take minutes is a
+        // losing bet — Claude CLI's per-tool-call timeout (~60s) fires first
+        // and the plugin dies when the agent exits. So: record the intent,
+        // return "queued" to the agent IMMEDIATELY, and let the CLI
+        // (`betterclaw approve <id>`) handle the actual dispatch to the
+        // backend when the user decides.
+        //
+        // Dedupe on {tool, params}: if Claude CLI retries the same tool call
+        // with identical params before the agent's turn ends, reuse the same
+        // id so `betterclaw pending` doesn't show duplicates.
         const hash = hashToolCall(stripped, event.params ?? {});
-        let inflight = approvalPromiseByHash.get(hash);
-        if (!inflight) {
-          const id = crypto.randomUUID().slice(0, 8);
+        let id = approvalPromiseByHash.get(hash)?.id;
+        if (!id) {
+          id = crypto.randomUUID().slice(0, 8);
           runLogger.append({
             ts,
             type: "approval_pending",
             id,
             node: workflowState.currentNode,
             tool: stripped,
+            vertical: activeVerticalId,
             params: event.params ?? {},
           });
           process.stderr.write(
-            `[APPROVAL] ${ts} id=${id} node=${workflowState.currentNode} tool=${stripped} — waiting for decision…\n` +
-              `[APPROVAL]   run: betterclaw approve ${id}   or   betterclaw deny ${id}\n`,
+            `[APPROVAL] ${ts} id=${id} tool=${stripped} — queued for out-of-band approval\n` +
+              `[APPROVAL]   run: betterclaw show ${id}   # inspect the draft/params\n` +
+              `[APPROVAL]   then: betterclaw approve ${id}   or   betterclaw deny ${id}\n`,
           );
-          const promise = (async () => {
-            const decision = await waitForApproval(approvalsDir, id, 0);
-            const endTs = new Date().toISOString();
-            for (const suffix of ["approved", "denied"]) {
-              try { fs.unlinkSync(path.join(approvalsDir, `${id}.${suffix}`)); } catch {}
-            }
-            const statusLabel =
-              decision === "approved" ? "APPROVED" :
-              decision === "denied" ? "DENIED" :
-              decision === "cancelled" ? "CANCELLED (shutdown)" :
-              "TIMEOUT";
-            process.stderr.write(`[APPROVAL] ${endTs} id=${id} → ${statusLabel}\n`);
-            runLogger.append({ ts: endTs, type: "approval_resolved", id, decision });
-            approvalPromiseByHash.delete(hash);
-            return decision;
-          })();
-          inflight = { id, promise };
-          approvalPromiseByHash.set(hash, inflight);
+          // Track so retries within the same turn dedupe to this id.
+          // (The "promise" field is kept for compat with older callers but
+          // isn't meaningfully awaited anywhere now.)
+          approvalPromiseByHash.set(hash, { id, promise: Promise.resolve("queued") });
         } else {
           process.stderr.write(
-            `[APPROVAL] ${ts} duplicate tool call — awaiting existing id=${inflight.id} (claude-cli retry?)\n`,
+            `[APPROVAL] ${ts} duplicate tool call within turn — reusing id=${id}\n`,
           );
         }
-        const decision = await inflight.promise;
-        if (decision === "denied") {
-          return {
-            block: true,
-            blockReason: `User denied approval for '${stripped}' at node '${workflowState.currentNode}'.`,
-          };
-        }
-        if (decision === "cancelled" || decision === "timeout") {
-          return {
-            block: true,
-            blockReason: `Approval ${decision} for '${stripped}' at node '${workflowState.currentNode}'.`,
-          };
-        }
+        return {
+          block: true,
+          blockReason:
+            `Approval queued · id=${id} · tool=${stripped}\n` +
+            `This call will be dispatched OUT-OF-BAND when the user resolves the approval. ` +
+            `The agent turn can continue without waiting. ` +
+            `Tell the user they can:\n` +
+            `  betterclaw show ${id}       (inspect the pending call)\n` +
+            `  betterclaw approve ${id}    (dispatch it)\n` +
+            `  betterclaw deny ${id}       (cancel it)\n` +
+            `If approved, the tool will be called by the CLI against the real backend; ` +
+            `the result lands in the user's real state (e.g. Gmail Drafts folder).`,
+        };
       }
 
       process.stderr.write(
