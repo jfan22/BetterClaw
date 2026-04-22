@@ -135,4 +135,22 @@ Ranked by leverage, not time:
 3. **Replace the sales stubs with a real CRM MCP.** HubSpot has an MCP; Salesforce has one via Composio. That's the first real-commercial vertical. Backend router pattern from v0.2 makes this a one-branch add.
 4. **Design pass on the live view.** Shipped as part of the Apr 21 design pass — warm-paper palette, serif headers, hairlines. No more work needed unless a real user complains.
 5. **Preset library expansion.** Four presets ship today; natural adds: customer-support triage, follow-up sweep (find emails you haven't replied to in N days), expense categorization, newsletter-only digest. Each is ~50 LOC of graph JSON + paragraph.
-6. **`after_tool_call` hook + async result surfacing.** When the CLI's `async_dispatch` logs a success/error, surface it somewhere the agent CAN see on the next turn. E.g. BetterClaw plugin on boot reads the last N async_dispatch events, prepends a synthetic "Recent approvals: [984b...] gmail_draft APPROVED; draft r8103... created" to the agent's system prompt. Closes the "agent doesn't see outcome" gap without lying.
+6. ~~`after_tool_call` hook + async result surfacing~~ — **shipped in v0.3**, see below.
+
+## v0.3 recent-approvals surfacing (Apr 22, commit pending)
+
+Closes the remaining "agent doesn't see outcome" gap from v0.2. After v0.2, approvals dispatched out-of-band via `betterclaw approve` wrote to `run.jsonl` but no future agent turn could see them — `run.jsonl` gets truncated on every plugin boot.
+
+**The fix is two surfaces.**
+
+1. **Cross-turn history log.** CLI's `resolveApproval` now appends every outcome (approved + dispatched, approved + backend error, denied) to `~/.betterclaw/history.jsonl`. This file is append-only across turns, outside the plugin's working directory, and persists forever (for now — cap it at ~10k entries if it grows noticeable).
+
+2. **Context injection at the start of every turn.** The plugin on boot reads the last 8 history entries in the past 24h and writes a formatted block to `~/.openclaw/workspace/MEMORY.md` bounded by `<!-- BEGIN betterclaw:recent_approvals -->` / `<!-- END ... -->` markers. OpenClaw's CLI backend auto-loads `MEMORY.md` into the agent's prompt as bootstrap context, so every new agent turn starts knowing what previous turns + the user have already handled. Any user-owned content in `MEMORY.md` outside our markers is preserved.
+
+**Hook detour for posterity.** Ideally this would be a `before_prompt_build` hook returning `{prependContext: block}`. The OpenClaw Plugin SDK supports this hook type and the result shape is exactly right. **But**: `runBeforePromptBuild()` is only invoked from `src/agents/pi-embedded-runner/` — the Pi embedded agent path. The `src/agents/cli-runner/` path (what `openclaw agent --local` uses with Claude CLI as backend) doesn't call it. Same pattern as the `before_tool_call` gap we found earlier.
+
+Rather than fork OpenClaw, we took the `MEMORY.md` workspace-file route. The `api.on("before_prompt_build", ...)` registration still ships alongside as dead weight — it'll activate automatically if the user runs the Pi embedded agent, or when OpenClaw's CLI backend grows plugin-provided prompt mutation support. Documenting both approaches so a future reader knows what the "right" fix would look like.
+
+**Verified.** Seeded `history.jsonl` with 3 entries from the real-Gmail dogfood (two approved drafts, one denied). Fresh triage run: the plugin wrote MEMORY.md on boot, the agent started its turn with recent-approvals in context, then on seeing the "Quick question about BetterClaw" email it decided: *"Skip — already handled. A reply draft to this exact thread was approved earlier today at 10:21 (per recent-approvals context). Not re-drafting."* No duplicate draft attempted. Exactly the behavior the v0.3 target described.
+
+**Trade-off to be honest about.** The `MEMORY.md` surface is globally shared across all verticals and agents running in this OpenClaw install — our "Recent approvals" block shows up for every agent turn, even ones using a graph from a different vertical. For single-user solo-agent use today that's fine; for multi-agent or multi-user installs it would leak activity across contexts. Not a concern at v0.3 usage levels; worth fixing before the OpenClaw gateway multi-session mode becomes relevant.

@@ -1,6 +1,7 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import {
@@ -45,6 +46,106 @@ function hashToolCall(toolName, params) {
   // concern in practice, but JSON.stringify with sorted keys gives us
   // correctness regardless.
   return toolName + ":" + JSON.stringify(params ?? {}, Object.keys(params ?? {}).sort());
+}
+
+// Cross-turn history log. CLI writes async_dispatch outcomes here (see
+// cli/betterclaw). On every agent turn, our before_prompt_build hook reads
+// the most recent entries and surfaces them to the agent so it can avoid
+// re-attempting tool calls that already resolved.
+const HISTORY_PATH = path.join(os.homedir(), ".betterclaw", "history.jsonl");
+const HISTORY_MAX_ENTRIES = 8;
+const HISTORY_MAX_AGE_HOURS = 24;
+
+function readRecentHistory() {
+  try {
+    if (!fs.existsSync(HISTORY_PATH)) return [];
+    const cutoffMs = Date.now() - HISTORY_MAX_AGE_HOURS * 3600 * 1000;
+    const lines = fs.readFileSync(HISTORY_PATH, "utf8").split("\n").filter((l) => l.trim());
+    const events = [];
+    for (const line of lines) {
+      try {
+        const e = JSON.parse(line);
+        if (e.ts && new Date(e.ts).getTime() >= cutoffMs) events.push(e);
+      } catch {}
+    }
+    return events.slice(-HISTORY_MAX_ENTRIES);
+  } catch {
+    return [];
+  }
+}
+
+const MEMORY_PATH = path.join(os.homedir(), ".openclaw", "workspace", "MEMORY.md");
+const MEMORY_MARKER_BEGIN = "<!-- BEGIN betterclaw:recent_approvals -->";
+const MEMORY_MARKER_END = "<!-- END betterclaw:recent_approvals -->";
+
+// Write our "recent approvals" block into ~/.openclaw/workspace/MEMORY.md,
+// which OpenClaw's CLI backend auto-loads into the agent's prompt context
+// on every turn. Preserves any user-owned content outside our markers.
+// If history is empty, strips our section (leaves other content alone).
+function syncRecentApprovalsToMemoryFile() {
+  try {
+    fs.mkdirSync(path.dirname(MEMORY_PATH), { recursive: true });
+    const existing = fs.existsSync(MEMORY_PATH) ? fs.readFileSync(MEMORY_PATH, "utf8") : "";
+    const events = readRecentHistory();
+    const block = formatHistoryForAgent(events);
+
+    // Strip any prior betterclaw block (idempotent).
+    const beginIdx = existing.indexOf(MEMORY_MARKER_BEGIN);
+    const endIdx = existing.indexOf(MEMORY_MARKER_END);
+    let preserved = existing;
+    if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
+      preserved = (existing.slice(0, beginIdx) + existing.slice(endIdx + MEMORY_MARKER_END.length))
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    }
+
+    let next;
+    if (block) {
+      const section = [MEMORY_MARKER_BEGIN, "", block, "", MEMORY_MARKER_END].join("\n");
+      next = preserved ? `${section}\n\n${preserved}\n` : `${section}\n`;
+    } else {
+      next = preserved ? `${preserved}\n` : "";
+    }
+
+    if (next.length === 0) {
+      // Nothing to write, nothing user-owned — remove the file if we created it earlier.
+      if (existing && existing.trim() === "") {
+        try { fs.unlinkSync(MEMORY_PATH); } catch {}
+      }
+      return;
+    }
+    fs.writeFileSync(MEMORY_PATH, next);
+    process.stderr.write(
+      `[HISTORY] synced ${events.length} recent approval event(s) to ${MEMORY_PATH}\n`,
+    );
+  } catch (err) {
+    process.stderr.write(`[HISTORY] sync failed: ${String(err)}\n`);
+  }
+}
+
+function formatHistoryForAgent(events) {
+  if (events.length === 0) return null;
+  const lines = [
+    "## Recent approvals — past " + HISTORY_MAX_AGE_HOURS + "h",
+    "",
+    "These tool calls were already dispatched or denied out-of-band (by the user via `betterclaw approve`/`deny`). You do NOT need to re-attempt them. The user has already handled them.",
+    "",
+  ];
+  for (const e of events) {
+    const when = e.ts.replace("T", " ").slice(0, 16);
+    const verdict =
+      e.status === "success" ? "APPROVED · success" :
+      e.status === "error" ? "APPROVED · backend error" :
+      e.status === "not_dispatched" ? "DENIED" :
+      "UNKNOWN";
+    const detail =
+      e.status === "success" && e.result_summary ? e.result_summary :
+      e.status === "error" && e.error ? `error: ${e.error}` :
+      "";
+    const hint = e.summary_hint ? ` (${e.summary_hint})` : "";
+    lines.push(`- ${when} · ${e.tool} · ${verdict}${hint}${detail ? " — " + detail : ""}`);
+  }
+  return lines.join("\n");
 }
 
 function wrapExecuteWithHook(toolName, realExecute) {
@@ -208,6 +309,32 @@ export default definePluginEntry({
         transitioned: prevNode !== workflowState.currentNode,
       });
       return { params: result.params };
+    });
+
+    // v0.3: surface out-of-band dispatch outcomes to the agent at the start
+    // of every turn. Closes the "agent doesn't see the approved draft"
+    // UX gap: when the CLI's `betterclaw approve` dispatches a draft via
+    // Gmail MCP, the agent that originally requested it is long gone.
+    //
+    // Implementation: we'd prefer api.on("before_prompt_build", ...), but
+    // that hook doesn't fire in the `openclaw agent --local` cli-runner
+    // path (same OpenClaw gap as before_tool_call — runBeforePromptBuild is
+    // only invoked from pi-embedded-runner). Workaround: write our history
+    // block into the workspace's MEMORY.md, which OpenClaw's CLI backend
+    // auto-loads into the agent's bootstrap context. Bounded file (fixed
+    // allowlist of names in workspace.ts), so we don't pollute unexpected
+    // paths. Any user-owned content outside our markers is preserved.
+    syncRecentApprovalsToMemoryFile();
+    api.on("before_prompt_build", () => {
+      // Dead weight in the current cli-runner path, but leave it wired so
+      // it activates automatically if the user runs the Pi embedded agent
+      // (which DOES fire before_prompt_build) or when OpenClaw's CLI
+      // backend eventually grows support for plugin-provided prompt
+      // mutations.
+      const events = readRecentHistory();
+      const block = formatHistoryForAgent(events);
+      if (!block) return;
+      return { prependContext: block };
     });
 
     // Register only the tools for the active vertical. Each execute is

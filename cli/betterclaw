@@ -25,6 +25,19 @@ const APPROVALS_DIR = path.join(PLUGIN_ROOT, "approvals");
 const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
 const PRESETS_DIR = path.resolve(__dirname, "..", "presets");
 
+// Cross-turn history log. Unlike run.jsonl (per-turn, truncated on each
+// plugin boot), this is append-only and survives across agent turns. The
+// plugin's before_prompt_build hook reads from it to surface recent
+// approvals back to the agent, so it can avoid re-drafting things the user
+// already handled.
+const HISTORY_PATH = path.join(os.homedir(), ".betterclaw", "history.jsonl");
+function appendHistory(event) {
+  try {
+    fs.mkdirSync(path.dirname(HISTORY_PATH), { recursive: true });
+    fs.appendFileSync(HISTORY_PATH, JSON.stringify(event) + "\n");
+  } catch {}
+}
+
 // Terminal styling. Matches the HTML design language: dim for secondary,
 // green=allow, red=deny, yellow=pending, cyan=accent/meta, bold for command
 // names and page titles. Respects NO_COLOR and non-TTY (pipes get plain text).
@@ -1350,11 +1363,22 @@ async function resolveApproval(id, decision) {
   }
 
   if (decision === "deny") {
+    const ts = new Date().toISOString();
     appendRunEvent({
-      ts: new Date().toISOString(),
+      ts,
       type: "approval_resolved",
       id: record.id,
       decision: "denied",
+    });
+    appendHistory({
+      ts,
+      type: "async_dispatch",
+      id: record.id,
+      tool: record.tool,
+      vertical: record.vertical,
+      decision: "denied",
+      status: "not_dispatched",
+      summary_hint: summarizeParamsForHistory(record),
     });
     console.log();
     console.log(`  ${deny("Denied")} ${ui.chip(record.id)} ${dim("— tool will not be dispatched.")}`);
@@ -1405,6 +1429,17 @@ async function dispatchApprovedTool(record) {
       status: "success",
       result_summary: result.summary,
     });
+    appendHistory({
+      ts: endTs,
+      type: "async_dispatch",
+      id: record.id,
+      tool: record.tool,
+      vertical: record.vertical,
+      decision: "approved",
+      status: "success",
+      result_summary: result.summary,
+      summary_hint: summarizeParamsForHistory(record),
+    });
     console.log(`  ${allow("✓")}  ${bold(record.tool)} ${dim("dispatched:")}`);
     if (result.summary) {
       for (const line of result.summary.split("\n")) {
@@ -1424,10 +1459,41 @@ async function dispatchApprovedTool(record) {
       status: "error",
       error: result.error,
     });
+    appendHistory({
+      ts: endTs,
+      type: "async_dispatch",
+      id: record.id,
+      tool: record.tool,
+      vertical: record.vertical,
+      decision: "approved",
+      status: "error",
+      error: result.error,
+      summary_hint: summarizeParamsForHistory(record),
+    });
     console.log(`  ${deny("✗")}  ${bold(record.tool)} ${dim("dispatch failed:")}`);
     console.log("     " + deny(result.error));
   }
   console.log();
+}
+
+// One-liner describing the params, shape-appropriate for each tool. Used in
+// the history log so the plugin can surface a human-readable hint back to
+// the agent on the next turn ("draft re: Quick question about BetterClaw to
+// clawtester58@gmail.com").
+function summarizeParamsForHistory(record) {
+  const p = record.params || {};
+  if (record.tool === "gmail_draft") {
+    const to = Array.isArray(p.to) ? p.to.join(", ") : p.to;
+    return `to=${to} subject=${JSON.stringify(p.subject ?? "")}`;
+  }
+  if (record.tool === "sales_draft_outreach") {
+    return `leadId=${p.leadId} subject=${JSON.stringify(p.subject ?? "")}`;
+  }
+  // Fallback — truncated JSON of first 3 keys
+  const keys = Object.keys(p).slice(0, 3);
+  const brief = {};
+  for (const k of keys) brief[k] = p[k];
+  return JSON.stringify(brief);
 }
 
 // Backend router: which dispatch strategy for which tool. Reads the tool
