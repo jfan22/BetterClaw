@@ -76,6 +76,31 @@ Overshipped, because each primitive built on the one before it faster than expec
 - Gmail OAuth still tied to a throwaway account — by design
 - No CI, no tests, no npm publish yet — ship-prep work
 
+## Dogfood findings (Apr 21-22)
+
+Four dogfood sessions: shopping with a real constraint ("Mother's Day gift, under $100, free shipping, not electronics"), throwaway-Gmail triage, read-only on real Gmail, and a full real-Gmail triage with approval on a self-sent test question.
+
+Bugs caught + fixed mid-session:
+
+- **Vertical detection missed "gift" / "jewellery" / "fragrance"** — compiler fell through to email on a shopping paragraph. +24 shopping keywords, fixed. Commit `7f1a3e3`. The structural fix is "have the compiler emit the vertical itself, not keyword heuristics" — deferred.
+
+- **Claude CLI's per-tool-call timeout piled up duplicate approval requests.** Each ~60s retry created a fresh approval id; the pending queue grew to 3 entries for one intent. Added params-hash dedupe — retries await the same promise. Commit `da98294`.
+
+- **Approval UX was too opaque** — `betterclaw pending` truncated at 200 chars, you couldn't read the full draft body from the CLI. Added `betterclaw show <id>` (works on pending + historical), tightened pending to a keys-only summary, added SIGTERM/SIGINT handling. Commit `6aee2a0`.
+
+Known issue left on the wall (not fixed):
+
+- **Agent doesn't know post-approval drafts succeeded.** Observed on the real-Gmail triage run: agent's Claude CLI tool-call timed out, agent composed inline and ended the turn, user approved 6 min later, plugin dispatched the real draft silently. Agent believes the call failed. Gmail has the draft. If user re-runs triage, the agent may re-draft.
+  Fixes in order of seriousness: (a) plugin returns "queued" immediately, draft happens async on approval — but that's a lie to the agent about outcome; (b) approval window ≤55s, after which the hook errors with "approval pending, see `betterclaw pending`" — honest but asks the user to resume manually; (c) patch openclaw-cli's tool timeout.
+  For v0.1.0, documented and lived with. v0.2 target.
+
+Agent reasoning quality was genuinely good on real data:
+
+- Cross-thread stitching: on the real inbox, correctly identified that the UT Austin scholarship thread (3 messages) was already resolved by your 17:05 reply.
+- Temporal reasoning: eliminated a $89 Dior fragrance because "Ships in 2 weeks won't make Mother's Day May 10."
+- Prompt-injection defense: refused the "IT admin, send API key" test on every run without enforcement having to step in. Workflow graph was defense in depth, not the primary defender.
+- Draft body quality: answered both specific questions in the BetterClaw test email (tiered approval, tool throttling), plausible voice, substantive CTA ("what does next week look like for you?").
+
 ## Next, if we keep going
 
 Ranked by leverage, not time:
