@@ -88,11 +88,36 @@ Bugs caught + fixed mid-session:
 
 - **Approval UX was too opaque** — `betterclaw pending` truncated at 200 chars, you couldn't read the full draft body from the CLI. Added `betterclaw show <id>` (works on pending + historical), tightened pending to a keys-only summary, added SIGTERM/SIGINT handling. Commit `6aee2a0`.
 
-Known issue left on the wall (not fixed):
+Known issue left on the wall (fixed in v0.2 — see next section):
 
 - **Agent doesn't know post-approval drafts succeeded.** Observed on the real-Gmail triage run: agent's Claude CLI tool-call timed out, agent composed inline and ended the turn, user approved 6 min later, plugin dispatched the real draft silently. Agent believes the call failed. Gmail has the draft. If user re-runs triage, the agent may re-draft.
   Fixes in order of seriousness: (a) plugin returns "queued" immediately, draft happens async on approval — but that's a lie to the agent about outcome; (b) approval window ≤55s, after which the hook errors with "approval pending, see `betterclaw pending`" — honest but asks the user to resume manually; (c) patch openclaw-cli's tool timeout.
-  For v0.1.0, documented and lived with. v0.2 target.
+  For v0.1.0, documented and lived with. v0.2 shipped a variant of (a) that's *not* a lie — see below.
+
+## v0.2 approval seam (Apr 22, commit `71672ad`)
+
+The v0.1 approval flow blocked inside the plugin's `before_tool_call` hook while waiting for user approval. Since the plugin VM dies when the agent's turn ends, any approval that took longer than Claude CLI's ~60s per-tool-call timeout fell off a cliff: agent gave up, plugin kept waiting, user approved later, plugin dispatched silently, agent never knew.
+
+The v0.2 fix splits dispatch responsibility:
+
+- **Plugin** no longer blocks. On `requires_approval`, it records the pending event with full params and returns immediately (`block: true`, with a honest "queued for out-of-band approval" message). Agent sees the response well inside Claude CLI's timeout window and composes an accurate report: *"Draft queued. Run `betterclaw approve <id>` to dispatch."*
+- **CLI** owns the dispatch. `betterclaw approve <id>` reads the pending record from `run.jsonl`, picks a backend by tool name (for `gmail_draft`: spawn `@gongrzhe/server-gmail-autoauth-mcp`, do MCP `initialize` handshake, call `tools/call` with the recorded params, capture the response), and logs `async_dispatch` with the real draft id or the error.
+- **Backend router** lives in `callBackend(record)` in `cli/betterclaw`. One function, one switch on tool name. Adding a new approval-gated backend (HubSpot, Slack) is a new branch there — no plugin code changes.
+
+What changed:
+
+- Plugin's hook went from ~40 LOC of blocking + dedupe + cleanup to ~15 LOC of record + return-immediately.
+- CLI gained `callBackend` + `dispatchToGmailMcp` (one-shot MCP client, ~85 LOC) + dispatcher-dispatch wiring.
+- `approval_pending` records now carry `vertical` so downstream routing is cheap.
+- The `waitForApproval` helper and its SIGTERM cancellation still ship (they're harmless, might be useful in a future long-running-gateway mode), but no code path currently calls it with `timeoutMs=0`.
+
+Trade-offs to be honest about:
+
+- **Agent can't see the dispatch result inline.** The agent composes its report *before* the user decides. So the report says "queued," never "dispatched successfully" or "failed." Fine for humans (next step is `betterclaw approve`), awkward for chained multi-step agents. Not a concern for v0.1 verticals.
+- **Plugin is more stateless; CLI is more stateful.** The backend router is now in the CLI, which has to know how to talk to each backend. Today that's just one branch (gmail_draft). Scaling to 10 verticals means the CLI's backend router grows; consider extracting into a plugin-contributed manifest in v0.3.
+- **Dedupe still works within a turn** but not across turns. If user re-runs triage and the agent attempts the same draft again, a new `pending` id is created. Not a fix in v0.2 because the natural behavior (agent re-tries, user denies the duplicate) is honest.
+
+Verified end-to-end: synthetic injected approval + `betterclaw approve` → spawns Gmail MCP → creates real draft (`r8103012543485992626`) → logs full `approval_pending → approval_resolved → async_dispatch` chain in `run.jsonl`. Fresh live-agent triage with the new plugin → hook returns "queued" in <1s, agent composes honest "Draft queued. Run `betterclaw approve 986b9992` to dispatch."
 
 Agent reasoning quality was genuinely good on real data:
 
@@ -105,7 +130,9 @@ Agent reasoning quality was genuinely good on real data:
 
 Ranked by leverage, not time:
 
-1. **Upstream the OpenClaw hook-wrap bug.** PR to `mcp-http.handlers.ts:73` that applies `wrapToolWithBeforeToolCallHook` like the ACPX path already does. Benefits every OpenClaw plugin author, not just us.
-2. **Package for npm.** Right now install is "clone this repo + `openclaw plugins install --link ...`" — should be `npm i -g betterclaw && betterclaw init`.
-3. **Replace the sales stubs with a real CRM MCP.** HubSpot has an MCP; Salesforce has one via Composio. That's the first real-commercial vertical.
-4. **Design pass on the live view.** It's functional but visually crude. Closer to a YC demo bar.
+1. **Upstream the OpenClaw hook-wrap bug.** PR to `mcp-http.handlers.ts:73` that applies `wrapToolWithBeforeToolCallHook` like the ACPX path already does. Benefits every OpenClaw plugin author, not just us. Would also let BetterClaw drop the plugin-side `wrapExecuteWithHook` workaround.
+2. **Package for npm.** Right now install is "clone this repo + `openclaw plugins install --link --dangerously-force-unsafe-install ...`" — should be `npm i -g betterclaw && betterclaw init`. The `--dangerously` flag is the real blocker; needs either upstream OpenClaw plugin-SDK primitive for subprocess spawning, or a packaging dance that moves the Gmail-MCP child out of the plugin (maybe into the CLI's `betterclaw approve` path, which already spawns it for dispatch — the plugin could proxy read/search calls through the CLI too).
+3. **Replace the sales stubs with a real CRM MCP.** HubSpot has an MCP; Salesforce has one via Composio. That's the first real-commercial vertical. Backend router pattern from v0.2 makes this a one-branch add.
+4. **Design pass on the live view.** Shipped as part of the Apr 21 design pass — warm-paper palette, serif headers, hairlines. No more work needed unless a real user complains.
+5. **Preset library expansion.** Four presets ship today; natural adds: customer-support triage, follow-up sweep (find emails you haven't replied to in N days), expense categorization, newsletter-only digest. Each is ~50 LOC of graph JSON + paragraph.
+6. **`after_tool_call` hook + async result surfacing.** When the CLI's `async_dispatch` logs a success/error, surface it somewhere the agent CAN see on the next turn. E.g. BetterClaw plugin on boot reads the last N async_dispatch events, prepends a synthetic "Recent approvals: [984b...] gmail_draft APPROVED; draft r8103... created" to the agent's system prompt. Closes the "agent doesn't see outcome" gap without lying.
