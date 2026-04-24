@@ -3,7 +3,6 @@ node_modules/
 npm-debug.log
 yarn-error.log
 package-lock.json
-pnpm-lock.yaml
 
 # Runtime state the plugin writes during an agent turn (post-monorepo paths)
 packages/plugin-openclaw/active-graph.json
