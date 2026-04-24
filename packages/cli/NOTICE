@@ -1,0 +1,19 @@
+BetterClaw
+Copyright 2026 BetterClaw contributors
+
+This product includes software developed at the BetterClaw project
+(https://github.com/jfan22/BetterClaw).
+
+Third-party components (installed as runtime dependencies, not redistributed in
+source form here):
+
+- OpenClaw (https://openclaw.ai) — host runtime / agent platform. BetterClaw is
+  installed as an OpenClaw plugin; OpenClaw is separately licensed and packaged.
+- @gongrzhe/server-gmail-autoauth-mcp — Gmail MCP server spawned by the
+  BetterClaw daemon at runtime. Separately licensed by its author.
+- @sinclair/typebox — plugin dependency for runtime schema validation.
+  Separately licensed (MIT).
+
+Each third-party component is downloaded at install/run time from its own
+registry (npm) or repository; see each component's own LICENSE / package.json
+for its terms.

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Node syntax check — CLI
+        run: node --check packages/cli/bin/betterclaw
+
+      - name: Node syntax check — plugin
+        run: |
+          for f in packages/plugin-openclaw/*.mjs; do
+            echo "checking $f"
+            node --check "$f"
+          done
+
+      - name: Verify CLI help runs
+        run: ./packages/cli/bin/betterclaw --help > /dev/null
+
+      - name: Verify doctor runs (non-zero exit is OK here — missing OpenClaw)
+        run: ./packages/cli/bin/betterclaw doctor || true
+
+      - name: Dry-run publish — CLI
+        run: pnpm --filter "@betterclaw/cli" publish --dry-run --no-git-checks
+
+      - name: Dry-run publish — plugin
+        run: pnpm --filter "betterclaw" publish --dry-run --no-git-checks
+
+      - name: Verify no PII vocabulary in telemetry call sites
+        run: |
+          # Any raw user-typed string in a telemetry properties object is a leak.
+          # Specifically: paragraph/email body/subject/to/from/messageId/graph JSON.
+          if grep -rn -E "emitTelemetry|emitPluginTelemetry" packages/ --include="*.mjs" --include="betterclaw" -A 8 | \
+             grep -iE "^\s+(paragraph|subject|body|to_address|from_address|message_id|graph_content):"; then
+            echo "::error::PII-shaped key detected in telemetry call site; audit required"
+            exit 1
+          fi
+
+      - name: Verify plugin has no subprocess-spawn references
+        run: |
+          # OpenClaw's install-time scanner regex-matches on these strings.
+          # Even in comments they break install. Fail CI before review.
+          if grep -rn -E "child_process|\\.spawn\\(" packages/plugin-openclaw/ --include="*.mjs"; then
+            echo "::error::plugin-openclaw contains forbidden string (child_process or .spawn()). OpenClaw install will fail."
+            exit 1
+          fi
+
+      - name: Verify LICENSE + NOTICE synced across publishable packages
+        run: |
+          for pkg in packages/cli packages/plugin-openclaw; do
+            diff LICENSE "$pkg/LICENSE" > /dev/null || { echo "::error::$pkg/LICENSE out of sync with root. Run ./scripts/sync-license.sh"; exit 1; }
+            diff NOTICE "$pkg/NOTICE" > /dev/null || { echo "::error::$pkg/NOTICE out of sync with root. Run ./scripts/sync-license.sh"; exit 1; }
+          done
