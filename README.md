@@ -1,20 +1,25 @@
 # BetterClaw
 
-Paragraph-in, workflow-enforced AI agents. Wraps OpenClaw with a plugin that (a)
-exposes scoped tools via OpenClaw's loopback MCP, (b) enforces a declared
-workflow graph on every tool call, (c) snaps the agent back when it tries to step
-outside the declared workflow, (d) can pause mid-run on sensitive tool calls and
-resume after human approval.
+**v0.2.0** — monorepo + daemon release. Status: validating the V1 wedge with real users; not production-ready.
 
-Four verticals in the v0.1: **email**, **shopping**, **sales**, **travel**.
+Paragraph-in, workflow-enforced AI agents. Wraps OpenClaw (and soon Anthropic Cowork) with a plugin that (a) exposes scoped tools via a loopback MCP, (b) enforces a declared workflow graph on every tool call, (c) snaps the agent back when it tries to step outside the declared workflow, (d) can pause mid-run on sensitive tool calls and resume after human approval, (e) writes a cross-turn audit log so future sessions see what the user already handled.
 
-**→ New here? Read [QUICKSTART.md](./QUICKSTART.md) — zero-to-first-agent in 5 minutes.**
+Four verticals ship today: **email** (real Gmail), **shopping** (real dummyjson.com catalog), **sales** and **travel** (stubs, V2 gets HubSpot MCP and Amadeus/Duffel respectively). Roadmap + deferred work lives in [TODOS.md](./TODOS.md).
 
-**→ Contributing (or adding a vertical): [CONTRIBUTING.md](./CONTRIBUTING.md)**
+## Start here
 
-**→ Backstory and lessons: [RETRO.md](./RETRO.md)**
-
-**→ Design doc:** `~/.gstack/projects/BetterClaw/jfan-unknown-design-20260420-101229.md`
+| If you want to... | Go to |
+|---|---|
+| Install and run it in 5 minutes | [QUICKSTART.md](./QUICKSTART.md) |
+| Understand the design system | [DESIGN.md](./DESIGN.md) |
+| See what's deferred / in-progress | [TODOS.md](./TODOS.md) |
+| See what shipped in this release | [CHANGELOG.md](./CHANGELOG.md) |
+| Contribute (or add a vertical) | [CONTRIBUTING.md](./CONTRIBUTING.md) |
+| Release / publish to npm | [RELEASING.md](./RELEASING.md) |
+| License | [Apache-2.0](./LICENSE) |
+| Read the build log for v0.1 → v0.3 | [RETRO.md](./RETRO.md) |
+| Architecture decisions | [docs/adrs/](./docs/adrs/) |
+| The original product pitch | [prompt.md](./prompt.md) |
 
 ## Verticals
 
@@ -22,12 +27,12 @@ BetterClaw compiles to one of four verticals per workflow. The compiler auto-det
 
 | Vertical | Tools | Backend |
 |---|---|---|
-| `email` | `gmail_search`, `gmail_read`, `gmail_draft` | `@gongrzhe/server-gmail-autoauth-mcp` (spawned child) |
+| `email` | `gmail_search`, `gmail_read`, `gmail_draft` | `@gongrzhe/server-gmail-autoauth-mcp` (owned by the BetterClaw daemon, proxied over Unix socket) |
 | `shopping` | `shop_search`, `shop_details`, `shop_compare` | **Real** — dummyjson.com (194 products, 24 categories, server-side search, no auth) |
 | `sales` | `sales_find_leads`, `sales_enrich`, `sales_draft_outreach` | Stub lead catalog (5 fake leads). File header shows HubSpot / Apollo / Salesforce swap patterns. |
 | `travel` | `travel_search_flights`, `travel_search_hotels`, `travel_compare_flights` | Stub flight + hotel catalog. File header shows Amadeus swap pattern. |
 
-Verticals live in `plugins/betterclaw/vertical-*.mjs` — adding a new one is: write a file that exports a `{id, tools, guidance_for_compiler}` object, import it in `index.mjs`, add an entry to `VERTICAL_GUIDANCE` in `cli/betterclaw`. ~50 LOC per vertical for the tool stubs.
+Verticals live in `packages/plugin-openclaw/vertical-*.mjs` — adding a new one is: write a file that exports a `{id, tools, guidance_for_compiler}` object, import it in `index.mjs`, add an entry to `VERTICAL_GUIDANCE` in `packages/cli/bin/betterclaw`. ~50 LOC per vertical for the tool stubs. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full recipe.
 
 ## Status — v1 demo shippable (2026-04-21)
 
@@ -74,13 +79,13 @@ and drive the replay / live views.
 ## Architecture snapshot
 
 ```
-betterclaw CLI (cli/betterclaw)
+betterclaw CLI (packages/cli/bin/betterclaw)
    │ claude -p <compile-prompt>
    ▼
 active-graph.json   ←  read once at plugin init
    ▲
    │
-BetterClaw plugin (plugins/betterclaw/index.mjs)
+BetterClaw plugin (packages/plugin-openclaw/index.mjs)
    │
    ├─ registerTool("gmail_search")  ─┐
    ├─ registerTool("gmail_read")    ─┤  each handler:
@@ -88,14 +93,19 @@ BetterClaw plugin (plugins/betterclaw/index.mjs)
    └─ registerTool("gmail_ping")    ─┘   2. gmail.callTool(childToolName, params)
                                             │
                                             ▼
-                            GmailMcpClient  (plugins/betterclaw/gmail-client.mjs)
+                            GmailMcpClient  (packages/plugin-openclaw/mcp-proxy-client.mjs)
+                                            │ JSON-RPC over Unix socket
+                                            ▼
+                               BetterClaw daemon  (~/.betterclaw/mcp.sock)
                                             │ stdio MCP JSON-RPC
                                             ▼
-                            @gongrzhe/server-gmail-autoauth-mcp  (child process)
+                            @gongrzhe/server-gmail-autoauth-mcp  (daemon-owned subprocess)
                                             │ Gmail API
                                             ▼
                                          Gmail
 ```
+
+The daemon (`betterclaw start` / `stop` / `status`) owns the Gmail MCP subprocess on behalf of both the plugin and the CLI's approval dispatcher. Because the plugin is pure code (no `child_process.spawn`), `openclaw plugins install` no longer requires the `--dangerously-force-unsafe-install` flag. Gmail OAuth state also persists across agent turns via the one long-lived child.
 
 ## Architecture notes that differ from the design doc
 
@@ -111,24 +121,40 @@ transition rules, circuit breaker, Mermaid viz, paragraph compiler.
 
 ## Project layout
 
+Monorepo under `packages/` (pnpm workspaces, see `pnpm-workspace.yaml`):
+
 ```
 BetterClaw/
-├── README.md                          this file
-├── prompt.md                          original pitch
-├── cli/
-│   └── betterclaw                     compiler CLI (Claude-CLI-backed, Mermaid viz, approval gate)
-├── plugins/
-│   ├── betterclaw/                    the BetterClaw plugin itself
+├── README.md                           this file
+├── prompt.md                           original pitch
+├── DESIGN.md                           dual-aesthetic design system
+├── TODOS.md                            deferred work with context
+├── pnpm-workspace.yaml                 workspace manifest
+├── packages/
+│   ├── cli/                            @betterclaw/cli
+│   │   ├── package.json
+│   │   └── bin/
+│   │       └── betterclaw              compiler + daemon + approval CLI
+│   ├── plugin-openclaw/                the OpenClaw plugin (name: "betterclaw")
 │   │   ├── package.json
 │   │   ├── openclaw.plugin.json
-│   │   ├── index.mjs                  plugin entry — tool registration + enforcement gate
-│   │   ├── gmail-client.mjs           minimal stdio MCP client for the child Gmail MCP
-│   │   ├── workflow.mjs               graph loader + transition rule + circuit breaker
-│   │   └── active-graph.json          the current workflow (rewritten by `betterclaw <paragraph>`)
-│   └── gmail-bundle/                  DAY-1 ARTIFACT — disabled; kept for reference
+│   │   ├── index.mjs                   plugin entry — tool registration + enforcement gate
+│   │   ├── mcp-proxy-client.mjs        Unix-socket MCP client — talks to the BetterClaw daemon
+│   │   ├── workflow.mjs                graph loader + transition rule + circuit breaker
+│   │   └── active-graph.json           the current workflow (rewritten by `betterclaw <paragraph>`)
+│   ├── plugin-cowork/                  SCAFFOLD — Cowork/Claude Desktop plugin, Week 3+
+│   ├── contracts/                      SCAFFOLD — shared types between plugin + cloud, filled in with cloud work
+│   └── cloud/                          SCAFFOLD — paid cloud backend, gated on Week 3 validation
+├── presets/                            bundled workflow presets (one dir per vertical)
+├── docs/
+│   └── adrs/                           architecture decision records
+├── spikes/
+│   └── cowork-hook-verify/             verification spike for Cowork plugin SDK (ADR 0001)
 └── setup/
-    └── gcp-oauth-walkthrough.md       one-time Google Cloud setup guide
+    └── gcp-oauth-walkthrough.md        one-time Google Cloud setup guide
 ```
+
+Presets, docs, and spikes stay at repo root because they're shared across packages, not package-scoped.
 
 ## Key commands
 
@@ -195,6 +221,7 @@ Distribution is GitHub gists, not a custom platform. Git handles versioning; Git
   once the workflow is trusted. Currently v1 only drafts.
 - **Multi-vertical** — sales outreach, travel, shopping. Compiler prompt needs
   per-vertical tuning.
-- **CI/CD + distribution** — package as npm / ClawHub. For now install path is
-  `openclaw plugins install --link --dangerously-force-unsafe-install <path>`.
-  (Dangerous flag is required because the plugin spawns a child process.)
+- **CI/CD + distribution** — package as npm / ClawHub. Install path is now
+  `openclaw plugins install --link <path>` (the `--dangerously-force-unsafe-install`
+  flag was dropped in the 2026-04-24 Gmail-MCP-to-daemon migration — the plugin
+  no longer spawns subprocesses, so OpenClaw's safety scanner passes cleanly).

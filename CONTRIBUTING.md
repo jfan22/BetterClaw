@@ -2,7 +2,7 @@
 
 ## Adding a new vertical
 
-A "vertical" is a group of tools that covers one use-case domain — email, shopping, sales, travel. Each vertical is one file: `plugins/betterclaw/vertical-<name>.mjs`.
+A "vertical" is a group of tools that covers one use-case domain — email, shopping, sales, travel. Each vertical is one file: `packages/plugin-openclaw/vertical-<name>.mjs`.
 
 The architecture guarantees:
 - Tools for exactly one vertical are loaded per agent turn (based on the active graph's `vertical` field).
@@ -11,7 +11,7 @@ The architecture guarantees:
 
 ### The 3-step recipe
 
-**Step 1: Create `plugins/betterclaw/vertical-<name>.mjs`.**
+**Step 1: Create `packages/plugin-openclaw/vertical-<name>.mjs`.**
 
 ```js
 import { Type } from "@sinclair/typebox";
@@ -47,7 +47,7 @@ RULES:
 };
 ```
 
-**Step 2: Register it in `plugins/betterclaw/index.mjs`.**
+**Step 2: Register it in `packages/plugin-openclaw/index.mjs`.**
 
 Add the import and the VERTICALS entry:
 
@@ -60,7 +60,7 @@ const VERTICALS = new Map([
 ]);
 ```
 
-**Step 3: Teach the compiler about it in `cli/betterclaw`.**
+**Step 3: Teach the compiler about it in `packages/cli/bin/betterclaw`.**
 
 Add an entry to `VERTICAL_GUIDANCE`:
 
@@ -95,9 +95,9 @@ Put specific verticals before generic ones (e.g. "support" tickets before "email
 # Edit → no reinstall needed; plugin was installed with --link
 betterclaw "<paragraph that exercises your new vertical>"
 # Review the compiled graph in the browser → approve (y)
-openclaw agent --local --agent main -m "<task>"
+betterclaw run "<task>"             # wraps `openclaw agent --local --agent main -m <task>`
 # Verify [ALLOW] lines show your tools firing
-betterclaw view  # see the replay
+betterclaw view                      # see the replay
 ```
 
 ### Common patterns
@@ -110,7 +110,7 @@ betterclaw view  # see the replay
 ### What NOT to do
 
 - **Don't put vertical-specific state in `index.mjs`.** The main plugin is the dispatcher — it shouldn't know what a "lead" or "flight" is. All domain state belongs in the vertical file.
-- **Don't use `child_process.spawn` unless you truly need an external MCP server.** It triggers OpenClaw's dangerous-code scanner and forces users to pass `--dangerously-force-unsafe-install`. Prefer inline logic or `fetch()` to a public API.
+- **Don't import subprocess-spawning modules from plugin code.** OpenClaw's install-time safety scanner does a **regex match** (not AST analysis) on the literal strings `child_process` and `spawn(` — even in comments. Any mention blocks the install. If a vertical genuinely needs to drive an external MCP subprocess (like email does for Gmail), wire it through the BetterClaw CLI daemon (`packages/cli/bin/betterclaw` owns all subprocesses) and talk to the daemon over the Unix socket from the plugin side. See `packages/plugin-openclaw/mcp-proxy-client.mjs` for the pattern. Prefer `fetch()` to a public HTTP API when the vertical doesn't require MCP.
 - **Don't try to share tools across verticals.** If two verticals both want "send email," each should declare its own tool. Cross-vertical composition can come later via plugin dependencies.
 
 ### The full cost
@@ -119,7 +119,7 @@ betterclaw view  # see the replay
 
 ## Filing bugs
 
-- **OpenClaw-side bugs** (hook wrapping, plugin SDK gaps): open an issue in the OpenClaw repo. We track two known issues in RETRO.md: `mcp-http.handlers.ts:73` missing hook wrap, and the dangerous-code scanner blocking child_process plugins.
+- **OpenClaw-side bugs** (hook wrapping, plugin SDK gaps): open an issue in the OpenClaw repo. Known upstream work we depend on: PR #70147 (`before_tool_call` hook wrap fix in `mcp-http.handlers.ts`) and PR #70169 (`before_prompt_build` for the cli-runner path). When both merge we can drop the manual hook wrap in `packages/plugin-openclaw/index.mjs` and the MEMORY.md cross-turn surfacing workaround. See [TODOS.md § Upstream OpenClaw work](./TODOS.md) for status.
 - **BetterClaw-side bugs**: open an issue here. Include `betterclaw doctor` output, the active graph, and the run.jsonl if available.
 
 ## License
