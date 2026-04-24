@@ -124,4 +124,6 @@ betterclaw view                      # see the replay
 
 ## License
 
-TBD — the project is in active prototype state. Pick MIT if you're forking for internal use.
+BetterClaw is licensed under **[Apache License 2.0](./LICENSE)**. Chosen over MIT for the explicit patent grant, which matters for the enterprise-compliance wedge we're building toward. Third-party attribution lives in [NOTICE](./NOTICE).
+
+Contributions are accepted under the same Apache-2.0 terms per §5 of the license ("Submission of Contributions"). By opening a PR, you agree your contribution is licensed under Apache-2.0 without any additional conditions.
