@@ -1,0 +1,10 @@
+{
+  "name": "@betterclaw/cloud",
+  "version": "0.0.1",
+  "description": "BetterClaw paid cloud backend — audit log service, WorkOS SSO, team approval routing. Gated on Week 3 validation decision.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
+}

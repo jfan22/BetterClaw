@@ -1,0 +1,40 @@
+{
+  "name": "@betterclaw/cli",
+  "version": "0.2.0",
+  "description": "BetterClaw CLI — compile paragraphs into workflow graphs, manage approvals, run the Gmail MCP proxy daemon.",
+  "license": "Apache-2.0",
+  "author": "BetterClaw contributors",
+  "homepage": "https://github.com/jfan22/BetterClaw",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jfan22/BetterClaw.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/jfan22/BetterClaw/issues"
+  },
+  "keywords": [
+    "openclaw",
+    "ai-agents",
+    "workflow",
+    "agent-policy",
+    "audit",
+    "llm-tools"
+  ],
+  "type": "module",
+  "bin": {
+    "betterclaw": "./bin/betterclaw"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

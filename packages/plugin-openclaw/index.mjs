@@ -23,6 +23,7 @@ import { vertical as emailVertical } from "./vertical-email.mjs";
 import { vertical as shoppingVertical } from "./vertical-shopping.mjs";
 import { vertical as salesVertical } from "./vertical-sales.mjs";
 import { vertical as travelVertical } from "./vertical-travel.mjs";
+import { emitPluginTelemetry } from "./telemetry.mjs";
 const VERTICALS = new Map([
   [emailVertical.id, emailVertical],
   [shoppingVertical.id, shoppingVertical],
@@ -236,6 +237,12 @@ export default definePluginEntry({
           retry_limit: workflowGraph.max_reconsider_retries,
           reason: result.reason,
         });
+        emitPluginTelemetry("deviation_blocked", {
+          vertical: activeVerticalId,
+          attempted_tool: stripped,
+          from_node: prevNode,
+          retry: result.retry,
+        });
         return { block: true, blockReason: result.reason };
       }
 
@@ -306,6 +313,11 @@ export default definePluginEntry({
         from_node: prevNode,
         to_node: workflowState.currentNode,
         tool: stripped,
+        transitioned: prevNode !== workflowState.currentNode,
+      });
+      emitPluginTelemetry("auto_allow", {
+        vertical: activeVerticalId,
+        tool_name: stripped,
         transitioned: prevNode !== workflowState.currentNode,
       });
       return { params: result.params };

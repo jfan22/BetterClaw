@@ -1,0 +1,8 @@
+{
+  "name": "betterclaw-hook-verify",
+  "description": "Minimal stub plugin that exercises PreToolUse, UserPromptSubmit, and PostToolUse hooks to verify Cowork SDK feasibility for BetterClaw. See docs/adrs/0001-cowork-sdk-feasibility.md.",
+  "version": "0.0.1",
+  "author": {
+    "name": "BetterClaw"
+  }
+}

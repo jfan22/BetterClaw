@@ -3,12 +3,16 @@ node_modules/
 npm-debug.log
 yarn-error.log
 package-lock.json
+pnpm-lock.yaml
 
-# Runtime state the plugin writes during an agent turn
-plugins/betterclaw/active-graph.json
-plugins/betterclaw/active-paragraph.md
-plugins/betterclaw/run.jsonl
-plugins/betterclaw/approvals/
+# Runtime state the plugin writes during an agent turn (post-monorepo paths)
+packages/plugin-openclaw/active-graph.json
+packages/plugin-openclaw/active-paragraph.md
+packages/plugin-openclaw/run.jsonl
+packages/plugin-openclaw/approvals/
+
+# Spike verification logs (local dogfood only)
+spikes/cowork-hook-verify/*.log
 
 # Day-1 scaffolding — kept on disk locally as a disabled OpenClaw bundle,
 # but not something we want to track here.

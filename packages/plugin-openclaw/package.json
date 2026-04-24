@@ -1,0 +1,55 @@
+{
+  "name": "betterclaw",
+  "version": "0.2.0",
+  "description": "Workflow-enforcement plugin for OpenClaw — snaps agents back when they try to step outside their declared workflow.",
+  "license": "Apache-2.0",
+  "author": "BetterClaw contributors",
+  "homepage": "https://github.com/jfan22/BetterClaw",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jfan22/BetterClaw.git",
+    "directory": "packages/plugin-openclaw"
+  },
+  "bugs": {
+    "url": "https://github.com/jfan22/BetterClaw/issues"
+  },
+  "keywords": [
+    "openclaw-plugin",
+    "workflow-enforcement",
+    "ai-agents",
+    "gmail",
+    "approval-gate"
+  ],
+  "type": "module",
+  "files": [
+    "index.mjs",
+    "workflow.mjs",
+    "mcp-proxy-client.mjs",
+    "telemetry.mjs",
+    "vertical-email.mjs",
+    "vertical-shopping.mjs",
+    "vertical-sales.mjs",
+    "vertical-travel.mjs",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "openclaw": {
+    "extensions": ["./index.mjs"],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.4.15",
+      "pluginSdkVersion": "2026.4.15"
+    }
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

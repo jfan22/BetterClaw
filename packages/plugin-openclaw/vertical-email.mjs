@@ -1,8 +1,10 @@
-// Email vertical — wraps @gongrzhe/server-gmail-autoauth-mcp as a child process.
-// Owns the MCP proxy lifecycle via GmailMcpClient.
+// Email vertical — proxies Gmail MCP calls to the BetterClaw daemon via a Unix
+// socket. The daemon owns the @gongrzhe/server-gmail-autoauth-mcp subprocess;
+// this plugin code is pure (no subprocess-spawning imports), which is why
+// BetterClaw no longer requires `--dangerously-force-unsafe-install`.
 
 import { Type } from "@sinclair/typebox";
-import { GmailMcpClient } from "./gmail-client.mjs";
+import { GmailMcpClient } from "./mcp-proxy-client.mjs";
 
 const gmail = new GmailMcpClient();
 const proxy = (childToolName) => async (_id, params) => gmail.callTool(childToolName, params);

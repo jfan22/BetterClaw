@@ -9,6 +9,7 @@
 
 import fs from "node:fs";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
@@ -17,13 +18,16 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PLUGIN_ROOT = path.resolve(__dirname, "../plugins/betterclaw");
+// We're at packages/cli/bin/betterclaw. The plugin is at packages/plugin-openclaw/
+// and presets live at the repo root (shared reference across packages).
+const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
+const PLUGIN_ROOT = path.resolve(REPO_ROOT, "packages", "plugin-openclaw");
 const GRAPH_PATH = path.join(PLUGIN_ROOT, "active-graph.json");
 const PARAGRAPH_PATH = path.join(PLUGIN_ROOT, "active-paragraph.md");
 const RUN_LOG_PATH = path.join(PLUGIN_ROOT, "run.jsonl");
 const APPROVALS_DIR = path.join(PLUGIN_ROOT, "approvals");
 const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
-const PRESETS_DIR = path.resolve(__dirname, "..", "presets");
+const PRESETS_DIR = path.resolve(REPO_ROOT, "presets");
 
 // Cross-turn history log. Unlike run.jsonl (per-turn, truncated on each
 // plugin boot), this is append-only and survives across agent turns. The
@@ -31,6 +35,303 @@ const PRESETS_DIR = path.resolve(__dirname, "..", "presets");
 // approvals back to the agent, so it can avoid re-drafting things the user
 // already handled.
 const HISTORY_PATH = path.join(os.homedir(), ".betterclaw", "history.jsonl");
+
+// Gmail MCP proxy daemon. The daemon owns the @gongrzhe/server-gmail-autoauth-mcp
+// subprocess and multiplexes JSON-RPC requests from the plugin (read-path) and
+// the CLI's own approval dispatcher (write-path) over a Unix domain socket.
+// Two reasons: (1) plugin code stays pure so OpenClaw's install-time safety
+// scanner no longer requires --dangerously-force-unsafe-install, (2) one
+// persistent child preserves Gmail OAuth state across agent turns.
+const MCP_SOCKET_PATH = path.join(os.homedir(), ".betterclaw", "mcp.sock");
+const MCP_PID_PATH = path.join(os.homedir(), ".betterclaw", "mcp.pid");
+const MCP_LOG_PATH = path.join(os.homedir(), ".betterclaw", "mcp.log");
+
+// Per-session workflow state for hook-model plugins (Cowork). Unlike the
+// long-lived plugin VM of OpenClaw, shell-command hooks fire per-invocation
+// with no in-memory state, so we persist current_node + reconsider_counter
+// across hook calls here. Keyed by the host's session_id.
+const COWORK_SESSIONS_PATH = path.join(os.homedir(), ".betterclaw", "cowork-sessions.json");
+const COWORK_SESSION_TTL_MS = 60 * 60 * 1000; // 1h; prune on every write
+const HOOK_HISTORY_MAX_ENTRIES = 8;
+const HOOK_HISTORY_MAX_AGE_HOURS = 24;
+
+// Local-only usage telemetry. Anonymous device UUID, no PII, append-only JSONL.
+// The user reads their own log via `betterclaw telemetry dump` / `export`. No
+// remote collector in V1 — we add one when we have design-partner volume. Plugin
+// writes to the same file via a duplicated helper so this file stays standalone.
+const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
+const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
+const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
+const BETTERCLAW_VERSION = "0.2.0";
+
+function loadIdentity() {
+  if (!fs.existsSync(IDENTITY_PATH)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(IDENTITY_PATH, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function ensureIdentity() {
+  let id = loadIdentity();
+  if (id && id.device_id) return id;
+  try {
+    fs.mkdirSync(path.dirname(IDENTITY_PATH), { recursive: true });
+  } catch {}
+  const fresh = {
+    device_id: globalThis.crypto?.randomUUID?.() ?? (require("node:crypto").randomUUID()),
+    first_seen: new Date().toISOString(),
+    platform: process.platform,
+    node_version: process.versions.node,
+  };
+  try {
+    fs.writeFileSync(IDENTITY_PATH, JSON.stringify(fresh, null, 2) + "\n", { mode: 0o600 });
+  } catch {}
+  return fresh;
+}
+
+function loadTelemetryConfig() {
+  // Env var override wins. Useful for CI, shared machines, one-shot testing.
+  if (process.env.BETTERCLAW_TELEMETRY === "off") {
+    return { enabled: false, source: "env" };
+  }
+  if (process.env.BETTERCLAW_TELEMETRY === "on") {
+    return { enabled: true, source: "env" };
+  }
+  if (!fs.existsSync(TELEMETRY_CONFIG_PATH)) {
+    return { enabled: true, source: "default" };
+  }
+  try {
+    const cfg = JSON.parse(fs.readFileSync(TELEMETRY_CONFIG_PATH, "utf8"));
+    return { enabled: cfg.enabled !== false, source: "file", ...cfg };
+  } catch {
+    return { enabled: true, source: "default" };
+  }
+}
+
+function writeTelemetryConfig(partial) {
+  try {
+    fs.mkdirSync(path.dirname(TELEMETRY_CONFIG_PATH), { recursive: true });
+  } catch {}
+  const existing = (() => {
+    if (!fs.existsSync(TELEMETRY_CONFIG_PATH)) return {};
+    try {
+      return JSON.parse(fs.readFileSync(TELEMETRY_CONFIG_PATH, "utf8"));
+    } catch {
+      return {};
+    }
+  })();
+  const merged = { ...existing, ...partial };
+  fs.writeFileSync(
+    TELEMETRY_CONFIG_PATH,
+    JSON.stringify(merged, null, 2) + "\n",
+    { mode: 0o600 },
+  );
+}
+
+function telemetryStatus() {
+  const cfg = loadTelemetryConfig();
+  const id = loadIdentity();
+  const events = readTelemetryEvents();
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Telemetry"));
+  console.log("  " + ui.hr());
+  if (cfg.enabled) {
+    console.log(`  ${allow("●")}  Enabled       ${gray("(source: " + cfg.source + ")")}`);
+  } else {
+    console.log(`  ${dim("○")}  Disabled      ${gray("(source: " + cfg.source + ")")}`);
+  }
+  console.log(`  ${dim("device_id   ")}  ${id?.device_id ?? gray("(not yet generated)")}`);
+  console.log(`  ${dim("first_seen  ")}  ${id?.first_seen ?? gray("—")}`);
+  console.log(`  ${dim("events      ")}  ${events.length}`);
+  console.log(`  ${dim("log         ")}  ${TELEMETRY_LOG_PATH}`);
+  console.log();
+  console.log("  " + dim("Commands:"));
+  console.log("    " + accent("betterclaw telemetry dump") + gray("    — event summary by type / vertical / week"));
+  console.log("    " + accent("betterclaw telemetry off") + gray("     — disable + stop writing"));
+  console.log("    " + accent("betterclaw telemetry on") + gray("      — re-enable"));
+  console.log("    " + accent("betterclaw telemetry export") + gray("  — dump JSONL to stdout (use --since YYYY-MM-DD)"));
+  console.log();
+}
+
+function readTelemetryEvents() {
+  if (!fs.existsSync(TELEMETRY_LOG_PATH)) return [];
+  try {
+    return fs.readFileSync(TELEMETRY_LOG_PATH, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        try { return JSON.parse(line); } catch { return null; }
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function telemetryDump() {
+  const events = readTelemetryEvents();
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Telemetry dump"));
+  console.log("  " + ui.hr());
+  if (events.length === 0) {
+    console.log("  " + dim("No events yet."));
+    console.log();
+    return;
+  }
+  console.log(`  ${dim("total events      ")}  ${events.length}`);
+  console.log(`  ${dim("first event       ")}  ${events[0].ts}`);
+  console.log(`  ${dim("latest event      ")}  ${events[events.length - 1].ts}`);
+  console.log();
+
+  // Count by event type
+  const byType = {};
+  const byVertical = {};
+  const byWeek = {};
+  for (const e of events) {
+    byType[e.event] = (byType[e.event] ?? 0) + 1;
+    const v = e.properties?.vertical;
+    if (v) byVertical[v] = (byVertical[v] ?? 0) + 1;
+    const wk = e.ts.slice(0, 10); // ISO date
+    byWeek[wk] = (byWeek[wk] ?? 0) + 1;
+  }
+
+  console.log("  " + bold("By event type"));
+  for (const [k, v] of Object.entries(byType).sort((a, b) => b[1] - a[1])) {
+    console.log(`    ${v.toString().padStart(5)}  ${k}`);
+  }
+  console.log();
+
+  if (Object.keys(byVertical).length > 0) {
+    console.log("  " + bold("By vertical"));
+    for (const [k, v] of Object.entries(byVertical).sort((a, b) => b[1] - a[1])) {
+      console.log(`    ${v.toString().padStart(5)}  ${k}`);
+    }
+    console.log();
+  }
+
+  console.log("  " + bold("By day (last 14)"));
+  const days = Object.entries(byWeek).sort().slice(-14);
+  for (const [k, v] of days) {
+    console.log(`    ${k}  ${"█".repeat(Math.min(v, 60))} ${gray("(" + v + ")")}`);
+  }
+  console.log();
+}
+
+function telemetryExport(since) {
+  const events = readTelemetryEvents();
+  const filtered = since
+    ? events.filter((e) => e.ts >= since)
+    : events;
+  for (const e of filtered) {
+    process.stdout.write(JSON.stringify(e) + "\n");
+  }
+}
+
+// Fire-and-forget. Never blocks, never throws. If disabled, silently no-ops.
+function emitTelemetry(event, properties = {}, { source = "cli" } = {}) {
+  const cfg = loadTelemetryConfig();
+  if (!cfg.enabled) return;
+  const id = ensureIdentity();
+  const row = {
+    ts: new Date().toISOString(),
+    device_id: id.device_id,
+    source,
+    version: BETTERCLAW_VERSION,
+    event,
+    properties: properties || {},
+  };
+  try {
+    fs.mkdirSync(path.dirname(TELEMETRY_LOG_PATH), { recursive: true });
+    fs.appendFileSync(TELEMETRY_LOG_PATH, JSON.stringify(row) + "\n");
+  } catch {
+    // Telemetry must never break a real workflow. Swallow all errors.
+  }
+}
+
+// Default feedback URL shown in the day-3 CTA. Override via
+// `~/.betterclaw/telemetry.json` { "feedback_url": "..." } or the
+// BETTERCLAW_FEEDBACK_URL env var. Maintainer should replace this with a real
+// URL (cal.com, a mailto:, a typeform) before publishing to npm.
+const DEFAULT_FEEDBACK_URL = "https://cal.com/betterclaw/chat";
+
+// Day-3 post-install CTA. Fires on `compile`, `run`, `start` — moments when
+// the user has just asked BetterClaw to do something useful, not during
+// inspection/debug commands. At most 3 showings per device, then auto-dismiss.
+// Gated on: telemetry enabled, identity exists, ≥3 days since first_seen,
+// AND user has actually exercised the product (≥2 compile events OR ≥1
+// approve). The "actually exercised" gate prevents nagging someone who
+// installed but bounced.
+function maybeShowFeedbackCTA() {
+  const cfg = loadTelemetryConfig();
+  if (!cfg.enabled) return;
+  if (cfg.ctaDismissed) return;
+  if ((cfg.ctaShownCount ?? 0) >= 3) return;
+  const id = loadIdentity();
+  if (!id || !id.first_seen) return;
+
+  const daysSinceInstall =
+    (Date.now() - new Date(id.first_seen).getTime()) / (86400 * 1000);
+  if (daysSinceInstall < 3) return;
+
+  // Check the user has actually used the tool (not just run `doctor` once).
+  let compiles = 0;
+  let approves = 0;
+  try {
+    const lines = fs.readFileSync(TELEMETRY_LOG_PATH, "utf8").split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const evt = JSON.parse(line);
+        if (evt.event === "compile") compiles++;
+        else if (evt.event === "approve") approves++;
+      } catch {}
+    }
+  } catch {
+    return; // no log yet = definitely no usage yet
+  }
+  if (compiles < 2 && approves < 1) return;
+
+  const url =
+    process.env.BETTERCLAW_FEEDBACK_URL || cfg.feedback_url || DEFAULT_FEEDBACK_URL;
+  const days = Math.floor(daysSinceInstall);
+
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Would love your perspective"));
+  console.log("  " + ui.hr());
+  console.log(`  You've been using this for ${days} day${days === 1 ? "" : "s"}.`);
+  console.log(`  15 min of honest feedback would shape where this goes next.`);
+  console.log();
+  console.log(`  ${accent(url)}`);
+  console.log();
+  console.log(`  ${dim("Dismiss: ")}${accent("betterclaw telemetry dismiss-cta")}`);
+  console.log();
+
+  writeTelemetryConfig({
+    ctaShownCount: (cfg.ctaShownCount ?? 0) + 1,
+    ctaFirstShown: cfg.ctaFirstShown || new Date().toISOString(),
+  });
+}
+
+// First-run notice. Called from `betterclaw start` and from the bare-paragraph
+// path. Prints once per device, then sets firstRunNoticeShown=true in the
+// telemetry config so it doesn't nag.
+function maybeShowFirstRunNotice() {
+  const cfg = loadTelemetryConfig();
+  if (cfg.firstRunNoticeShown) return;
+  if (!cfg.enabled) {
+    // Already off — no notice needed.
+    writeTelemetryConfig({ firstRunNoticeShown: true });
+    return;
+  }
+  console.log();
+  console.log("  " + dim("BetterClaw writes anonymous usage metrics to"));
+  console.log("  " + dim("  ~/.betterclaw/telemetry.jsonl (no PII, local-only)."));
+  console.log("  " + dim("Opt out any time: ") + accent("betterclaw telemetry off"));
+  console.log();
+  writeTelemetryConfig({ firstRunNoticeShown: true });
+}
 function appendHistory(event) {
   try {
     fs.mkdirSync(path.dirname(HISTORY_PATH), { recursive: true });
@@ -522,6 +823,102 @@ if (args[0] === "publish") {
   process.exit(0);
 }
 
+if (args[0] === "mcp-daemon") {
+  // Run the daemon in the foreground. --detach is equivalent to `betterclaw start`.
+  if (args.includes("--detach")) {
+    startDetachedDaemon();
+    process.exit(process.exitCode ?? 0);
+  }
+  // --foreground --quiet is the mode used by startDetachedDaemon's spawned copy.
+  const quiet = args.includes("--quiet");
+  await runMcpDaemonForeground({ quiet });
+  process.exit(0);
+}
+
+if (args[0] === "start") {
+  startDetachedDaemon();
+  process.exit(process.exitCode ?? 0);
+}
+
+if (args[0] === "stop") {
+  stopDaemon();
+  process.exit(process.exitCode ?? 0);
+}
+
+if (args[0] === "status") {
+  printDaemonStatus();
+  process.exit(0);
+}
+
+if (args[0] === "hook") {
+  const event = args[1];
+  const allowed = ["pre-tool-call", "user-prompt-submit", "post-tool-call"];
+  if (!allowed.includes(event)) {
+    console.error(`Usage: betterclaw hook <${allowed.join("|")}>`);
+    console.error(`Reads Cowork hook-event JSON from stdin, writes response JSON to stdout.`);
+    console.error(`Invoked by the Cowork plugin shim at packages/plugin-cowork/bin/hook-shim.sh.`);
+    process.exit(1);
+  }
+  await runHookCommand(event);
+  process.exit(0);
+}
+
+if (args[0] === "run") {
+  const task = args.slice(1).join(" ").trim();
+  if (!task) {
+    console.error("Usage: betterclaw run \"<task>\"");
+    process.exit(1);
+  }
+  ensureDaemonRunning();
+  maybeShowFeedbackCTA();
+  // Exec openclaw agent with the task. Leave the daemon running after exit so
+  // the next `betterclaw run` is instant.
+  const result = spawnSync(
+    "openclaw",
+    ["agent", "--local", "--agent", "main", "-m", task],
+    { stdio: "inherit" },
+  );
+  process.exit(result.status ?? 0);
+}
+
+if (args[0] === "telemetry") {
+  const sub = args[1];
+  if (sub === "off") {
+    writeTelemetryConfig({ enabled: false, firstRunNoticeShown: true });
+    console.log(`  ${allow("✓")}  Telemetry disabled. No further events will be written to ${TELEMETRY_LOG_PATH}.`);
+    process.exit(0);
+  }
+  if (sub === "on") {
+    writeTelemetryConfig({ enabled: true, firstRunNoticeShown: true });
+    console.log(`  ${allow("✓")}  Telemetry enabled. Events will be written to ${TELEMETRY_LOG_PATH}.`);
+    process.exit(0);
+  }
+  if (sub === "dismiss-cta") {
+    writeTelemetryConfig({ ctaDismissed: true });
+    console.log(`  ${allow("✓")}  Feedback CTA dismissed. Thanks for using BetterClaw.`);
+    process.exit(0);
+  }
+  if (sub === "dump") {
+    telemetryDump();
+    process.exit(0);
+  }
+  if (sub === "export") {
+    const sinceIdx = args.indexOf("--since");
+    const since = sinceIdx >= 0 ? args[sinceIdx + 1] : null;
+    telemetryExport(since);
+    process.exit(0);
+  }
+  if (sub === "path") {
+    // Machine-readable: just print the log path. Useful for
+    // `cat $(betterclaw telemetry path) | jq ...` pipelines.
+    console.log(TELEMETRY_LOG_PATH);
+    process.exit(0);
+  }
+  // Default: show status + short summary.
+  telemetryStatus();
+  process.exit(0);
+}
+
 const paragraph = args.join(" ").trim();
 if (!paragraph) {
   console.error("Usage: betterclaw \"<paragraph>\"");
@@ -538,9 +935,21 @@ const verticalId = detectVertical(paragraph);
 console.log(`  ${dim("vertical")}       ${ui.chip(verticalId, "accent")}`);
 console.log(`  ${dim("compiling via")}  ${accent("claude -p")} ${gray("(model=opus)")}`);
 const prompt = buildCompilePrompt(paragraph, verticalId);
+const _compileStartMs = Date.now();
 const graph = compileWithClaude(prompt);
+const _compileDurationMs = Date.now() - _compileStartMs;
 if (!graph.vertical) graph.vertical = verticalId;
 validateGraph(graph);
+
+emitTelemetry("compile", {
+  vertical: verticalId,
+  duration_ms: _compileDurationMs,
+  node_count: graph.nodes.length,
+  edge_count: graph.edges.length,
+  has_approval_gate: (graph.requires_approval?.length ?? 0) > 0,
+});
+maybeShowFirstRunNotice();
+maybeShowFeedbackCTA();
 
 const approvals = Array.isArray(graph.requires_approval) ? graph.requires_approval : [];
 console.log();
@@ -569,7 +978,7 @@ fs.writeFileSync(PARAGRAPH_PATH, paragraph + "\n");
 console.log(`  ${allow("✓")}  Written to ${gray(GRAPH_PATH)}`);
 console.log();
 console.log("  " + dim("Next:"));
-console.log("    " + accent(`openclaw agent --local --agent main -m "<your task>"`));
+console.log("    " + accent(`betterclaw run "<your task>"`));
 console.log("  " + dim("The plugin picks up the new graph on the next agent turn."));
 console.log();
 
@@ -662,7 +1071,7 @@ function installPreset(name) {
   }
   console.log();
   console.log("  " + dim("Try it:"));
-  console.log("    " + accent(`openclaw agent --local --agent main -m "${srcMeta.example_agent_message || "<your task>"}"`));
+  console.log("    " + accent(`betterclaw run "${srcMeta.example_agent_message || "<your task>"}"`));
   console.log();
 }
 
@@ -698,7 +1107,20 @@ function runDoctor() {
       : inspect.status === 0
         ? "installed but not loaded — run `openclaw config set plugins.allow '[\"betterclaw\"]'`"
         : "not installed",
-    fix: `openclaw plugins install ${PLUGIN_ROOT} --link --dangerously-force-unsafe-install && openclaw config set plugins.allow '["betterclaw"]'`,
+    fix: `openclaw plugins install ${PLUGIN_ROOT} --link && openclaw config set plugins.allow '["betterclaw"]'`,
+  });
+
+  // MCP daemon status
+  const daemonStatus = readDaemonStatus();
+  checks.push({
+    name: "MCP daemon running",
+    ok: daemonStatus.running,
+    detail: daemonStatus.running
+      ? `pid=${daemonStatus.pid}, socket=${MCP_SOCKET_PATH}`
+      : daemonStatus.staleFile
+        ? `stale PID file (pid=${daemonStatus.pid} not alive)`
+        : "not running — tool calls that need Gmail will fail",
+    fix: "betterclaw start",
   });
 
   // Claude CLI auth profile
@@ -736,7 +1158,7 @@ function runDoctor() {
     name: "Gmail OAuth credentials (optional)",
     ok: gmailCredOk,
     detail: gmailCredOk ? "~/.gmail-mcp/credentials.json present" : "missing (only needed for email vertical)",
-    fix: "See QUICKSTART.md §3 for Gmail setup.",
+    fix: "See QUICKSTART.md §4 for Gmail setup.",
     optional: !gmailCredOk,
   });
 
@@ -798,6 +1220,7 @@ function printHelp() {
   console.log("  " + ui.hr());
   console.log(ui.section("  Run"));
   console.log(pair(`betterclaw "<paragraph>"`,       `Compile a paragraph to active-graph.json`));
+  console.log(pair(`betterclaw run "<task>"`,        `Auto-start daemon + run \`openclaw agent --local -m <task>\``));
   console.log(pair(`betterclaw view`,                `Render a replay-diff of the last agent run`));
   console.log(pair(`betterclaw view --watch`,        `Live HTTP server + browser view (approve / deny buttons)`));
   console.log(pair(`betterclaw pending`,             `List in-flight approval requests`));
@@ -805,6 +1228,18 @@ function printHelp() {
   console.log(pair(`betterclaw approve <id>`,        `Approve a pending request`));
   console.log(pair(`betterclaw deny <id>`,           `Deny a pending request`));
   console.log(pair(`betterclaw doctor`,              `Diagnose setup problems`));
+  console.log(ui.section("  Daemon (Gmail MCP proxy)"));
+  console.log(pair(`betterclaw start`,               `Start the daemon detached (idempotent)`));
+  console.log(pair(`betterclaw stop`,                `Stop the running daemon`));
+  console.log(pair(`betterclaw status`,              `Show daemon status (pid, socket, log path)`));
+  console.log(pair(`betterclaw mcp-daemon`,          `Run daemon in foreground (stderr logs visible)`));
+  console.log(ui.section("  Telemetry (local, no PII)"));
+  console.log(pair(`betterclaw telemetry`,           `Show enabled/disabled + event count`));
+  console.log(pair(`betterclaw telemetry dump`,      `Summary by event type / vertical / day`));
+  console.log(pair(`betterclaw telemetry off`,       `Disable (no future events written)`));
+  console.log(pair(`betterclaw telemetry on`,        `Re-enable`));
+  console.log(pair(`betterclaw telemetry export`,     `Dump raw JSONL to stdout (supports --since YYYY-MM-DD)`));
+  console.log(pair(`betterclaw telemetry dismiss-cta`,`Stop the day-3 "grab 15 min?" prompt`));
   console.log(ui.section("  Library & marketplace"));
   console.log(pair(`betterclaw presets`,             `List bundled preset workflows (one per vertical)`));
   console.log(pair(`betterclaw presets <name>`,      `Install a preset as the active graph`));
@@ -822,7 +1257,7 @@ function printHelp() {
   console.log("  " + ui.kicker("Quick start"));
   console.log(desc(`Try the shopping preset (zero setup):`));
   console.log(desc("    " + accent(`betterclaw presets shopping-compare`)));
-  console.log(desc("    " + accent(`openclaw agent --local --agent main -m "Find a good laptop under $1500, compare the top two"`)));
+  console.log(desc("    " + accent(`betterclaw run "Find a good laptop under $1500, compare the top two"`)));
   console.log();
 }
 
@@ -900,7 +1335,7 @@ function loadFromLibrary(name) {
   if (meta.forked_from) console.log(`    ${dim("forked from:")} ${gray(meta.forked_from)}`);
   console.log();
   console.log("  " + dim("Next:"));
-  console.log("    " + accent(`openclaw agent --local --agent main -m "<task>"`));
+  console.log("    " + accent(`betterclaw run "<task>"`));
   console.log();
 }
 
@@ -1202,7 +1637,7 @@ Compiled by [BetterClaw](https://github.com/) on ${meta.saved_at}.
 \`\`\`bash
 betterclaw fork <this-gist-url> ${name}
 betterclaw load ${name}
-openclaw agent --local --agent main -m "<your task>"
+betterclaw run "<your task>"
 \`\`\`
 
 ## Source paragraph
@@ -1380,6 +1815,11 @@ async function resolveApproval(id, decision) {
       status: "not_dispatched",
       summary_hint: summarizeParamsForHistory(record),
     });
+    emitTelemetry("deny", {
+      vertical: record.vertical,
+      tool_name: record.tool,
+      elapsed_since_queued_ms: record.queued_at_ms ? Date.now() - record.queued_at_ms : null,
+    });
     console.log();
     console.log(`  ${deny("Denied")} ${ui.chip(record.id)} ${dim("— tool will not be dispatched.")}`);
     console.log();
@@ -1387,6 +1827,11 @@ async function resolveApproval(id, decision) {
   }
 
   // APPROVE: dispatch the tool call out-of-band against the real backend.
+  emitTelemetry("approve", {
+    vertical: record.vertical,
+    tool_name: record.tool,
+    elapsed_since_queued_ms: record.queued_at_ms ? Date.now() - record.queued_at_ms : null,
+  });
   await dispatchApprovedTool(record);
 }
 
@@ -1417,8 +1862,30 @@ async function dispatchApprovedTool(record) {
     decision: "approved",
   });
 
+  const _dispatchStartMs = Date.now();
   const result = await callBackend(record);
+  const _dispatchDurationMs = Date.now() - _dispatchStartMs;
   const endTs = new Date().toISOString();
+
+  emitTelemetry(result.ok ? "dispatch_ok" : "dispatch_error", {
+    vertical: record.vertical,
+    tool_name: record.tool,
+    duration_ms: _dispatchDurationMs,
+    // Classify the error into a broad bucket without leaking the raw message.
+    // Don't log the error string itself — it may contain user data (email body,
+    // OAuth fragments, etc.) in Gmail MCP dispatch failures.
+    error_class: result.ok
+      ? undefined
+      : /daemon/i.test(result.error)
+        ? "daemon_unreachable"
+        : /timeout/i.test(result.error)
+          ? "timeout"
+          : /auth|unauthor/i.test(result.error)
+            ? "auth"
+            : /network|ENOTFOUND|ECONN/i.test(result.error)
+              ? "network"
+              : "other",
+  });
 
   if (result.ok) {
     appendRunEvent({
@@ -1514,48 +1981,844 @@ async function callBackend(record) {
   };
 }
 
-async function dispatchToGmailMcp(toolName, params) {
-  // One-shot Gmail MCP call. Spawns a fresh child, performs initialize +
-  // tools/call, captures the response, shuts down cleanly.
-  return new Promise((resolve) => {
-    const child = spawn("npx", ["-y", "@gongrzhe/server-gmail-autoauth-mcp"], {
+// ---- Workflow enforcement (vendored for `betterclaw hook`) ----
+//
+// The plugin-openclaw package has an identical copy in workflow.mjs. This copy
+// lives in the CLI so the CLI package is self-contained for npm publish AND so
+// the `betterclaw hook` subcommand (used by the Cowork plugin shim) can enforce
+// a workflow graph without cross-package imports. If you change the enforcement
+// rules, update both copies — there's a CI check planned for drift.
+
+function loadWorkflowGraph(graphPath) {
+  const raw = fs.readFileSync(graphPath, "utf8");
+  const graph = JSON.parse(raw);
+  graph.edges = [...graph.edges].sort((a, b) =>
+    a.from === b.from ? a.to.localeCompare(b.to) : a.from.localeCompare(b.from),
+  );
+  graph.max_reconsider_retries = graph.max_reconsider_retries ?? 3;
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const outgoing = new Map();
+  for (const e of graph.edges) {
+    if (!outgoing.has(e.from)) outgoing.set(e.from, []);
+    outgoing.get(e.from).push(e.to);
+  }
+  graph._byId = byId;
+  graph._outgoing = outgoing;
+  return graph;
+}
+
+function enforceWorkflow(graph, state, toolName, params) {
+  const currentNode = graph._byId.get(state.currentNode);
+  if (!currentNode) {
+    return {
+      decision: "block",
+      reason: `WORKFLOW CORRUPTED: current node '${state.currentNode}' missing from graph.`,
+      retry: 0,
+    };
+  }
+  if (currentNode.allowed_tools.includes(toolName)) {
+    state.reconsiderCounter = 0;
+    return { decision: "allow", params };
+  }
+  const outgoing = graph._outgoing.get(state.currentNode) ?? [];
+  const reachable = outgoing
+    .filter((id) => graph._byId.get(id)?.allowed_tools.includes(toolName))
+    .sort();
+  if (reachable.length > 0) {
+    state.currentNode = reachable[0];
+    state.reconsiderCounter = 0;
+    return { decision: "allow", params };
+  }
+  state.reconsiderCounter += 1;
+  const allowedHere = currentNode.allowed_tools.join(", ") || "(none)";
+  const nextNodes =
+    outgoing
+      .map((id) => {
+        const n = graph._byId.get(id);
+        if (!n) return `${id} (unknown)`;
+        const t = n.allowed_tools.join(", ") || "(none)";
+        return `${id} [${t}]`;
+      })
+      .join("; ") || "(none)";
+  const reason =
+    `DEVIATION: tool '${toolName}' not allowed in node '${currentNode.id}' ` +
+    `(${currentNode.purpose}). Allowed here: [${allowedHere}]. ` +
+    `Next nodes: [${nextNodes}]. Pick a tool from those lists.`;
+  if (state.reconsiderCounter > graph.max_reconsider_retries) {
+    return {
+      decision: "block",
+      reason:
+        `WORKFLOW TERMINATED: exceeded reconsider budget (${graph.max_reconsider_retries}) ` +
+        `at node '${currentNode.id}'. Stop trying; no valid move exists.`,
+      retry: state.reconsiderCounter,
+    };
+  }
+  return { decision: "block", reason, retry: state.reconsiderCounter };
+}
+
+function freshWorkflowState(graph) {
+  return { currentNode: graph.entry, reconsiderCounter: 0 };
+}
+
+function loadCoworkSessions() {
+  if (!fs.existsSync(COWORK_SESSIONS_PATH)) return {};
+  try {
+    const raw = fs.readFileSync(COWORK_SESSIONS_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed.sessions || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCoworkSessions(sessions) {
+  try {
+    fs.mkdirSync(path.dirname(COWORK_SESSIONS_PATH), { recursive: true });
+    // Prune old sessions before writing.
+    const now = Date.now();
+    const pruned = {};
+    for (const [id, s] of Object.entries(sessions)) {
+      const lastSeen = new Date(s.last_seen || 0).getTime();
+      if (now - lastSeen < COWORK_SESSION_TTL_MS) pruned[id] = s;
+    }
+    fs.writeFileSync(
+      COWORK_SESSIONS_PATH,
+      JSON.stringify({ sessions: pruned }, null, 2) + "\n",
+      { mode: 0o600 },
+    );
+  } catch {
+    // Fire-and-forget: if state write fails, enforcement still runs — just
+    // starts from entry node on next call. Visible behavior: the agent can
+    // re-traverse the graph. Not a silent-failure risk.
+  }
+}
+
+function getOrCreateCoworkSessionState(sessionId, graph) {
+  const sessions = loadCoworkSessions();
+  const existing = sessions[sessionId];
+  if (existing && existing.currentNode && graph._byId.has(existing.currentNode)) {
+    existing.last_seen = new Date().toISOString();
+    return { state: existing, sessions };
+  }
+  const fresh = {
+    ...freshWorkflowState(graph),
+    last_seen: new Date().toISOString(),
+  };
+  sessions[sessionId] = fresh;
+  return { state: fresh, sessions };
+}
+
+// Read recent approval history from ~/.betterclaw/history.jsonl. Mirrors the
+// plugin's readRecentHistory(). Cowork's UserPromptSubmit hook surfaces this
+// to the model so it doesn't re-attempt already-handled tool calls.
+function readRecentApprovalHistoryForHook() {
+  try {
+    if (!fs.existsSync(HISTORY_PATH)) return [];
+    const cutoffMs = Date.now() - HOOK_HISTORY_MAX_AGE_HOURS * 3600 * 1000;
+    const lines = fs
+      .readFileSync(HISTORY_PATH, "utf8")
+      .split("\n")
+      .filter((l) => l.trim());
+    const events = [];
+    for (const line of lines) {
+      try {
+        const e = JSON.parse(line);
+        if (e.type !== "async_dispatch") continue;
+        const t = new Date(e.ts).getTime();
+        if (t < cutoffMs) continue;
+        events.push(e);
+      } catch {}
+    }
+    return events.slice(-HOOK_HISTORY_MAX_ENTRIES);
+  } catch {
+    return [];
+  }
+}
+
+function formatApprovalHistoryForAgent(events) {
+  if (events.length === 0) return null;
+  const lines = [
+    `## Recent approvals — past ${HOOK_HISTORY_MAX_AGE_HOURS}h`,
+    "",
+    "These tool calls were already dispatched or denied out-of-band (by the user via `betterclaw approve`/`deny`). You do NOT need to re-attempt them.",
+    "",
+  ];
+  for (const e of events) {
+    const when = e.ts.replace("T", " ").slice(0, 16);
+    const verdict =
+      e.status === "success"
+        ? "APPROVED · success"
+        : e.status === "error"
+          ? "APPROVED · backend error"
+          : e.status === "not_dispatched"
+            ? "DENIED"
+            : "UNKNOWN";
+    const detail =
+      e.status === "success" && e.result_summary
+        ? e.result_summary
+        : e.status === "error" && e.error
+          ? `error: ${e.error}`
+          : "";
+    const hint = e.summary_hint ? ` (${e.summary_hint})` : "";
+    lines.push(
+      `- ${when} · ${e.tool} · ${verdict}${hint}${detail ? " — " + detail : ""}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+// ---- Cowork hook subcommand handlers ----
+
+async function readAllStdin() {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function runHookCommand(event) {
+  const raw = (await readAllStdin()).trim();
+  let payload;
+  if (!raw) {
+    // Empty stdin: print allow-by-default and exit. Defensive — hooks should
+    // never be invoked without a payload, but we never want to break the agent.
+    process.stdout.write("{}\n");
+    return;
+  }
+  try {
+    payload = JSON.parse(raw);
+  } catch (err) {
+    process.stderr.write(`[betterclaw-hook] invalid JSON on stdin: ${err.message}\n`);
+    process.stdout.write("{}\n");
+    return;
+  }
+  let response;
+  try {
+    if (event === "pre-tool-call") {
+      response = handlePreToolCallHook(payload);
+    } else if (event === "user-prompt-submit") {
+      response = handleUserPromptSubmitHook(payload);
+    } else if (event === "post-tool-call") {
+      response = handlePostToolCallHook(payload);
+    } else {
+      process.stderr.write(`[betterclaw-hook] unknown event: ${event}\n`);
+      response = {};
+    }
+  } catch (err) {
+    // Handler errors must never block the agent. Default to allow + log.
+    process.stderr.write(`[betterclaw-hook] handler error: ${err.message}\n`);
+    response = {};
+  }
+  process.stdout.write(JSON.stringify(response) + "\n");
+}
+
+function handlePreToolCallHook(payload) {
+  // Payload from Cowork PreToolUse:
+  //   { session_id, tool_name, tool_input, hook_event_name, ... }
+  const toolName = payload.tool_name;
+  const toolInput = payload.tool_input ?? {};
+  const sessionId = payload.session_id || "default";
+
+  // No active graph = no enforcement. Allow. (This happens when the user has
+  // installed the Cowork plugin but hasn't compiled a workflow yet.)
+  if (!fs.existsSync(GRAPH_PATH)) return {};
+
+  let graph;
+  try {
+    graph = loadWorkflowGraph(GRAPH_PATH);
+  } catch (err) {
+    process.stderr.write(`[betterclaw-hook] graph load failed: ${err.message}\n`);
+    return {}; // allow by default on internal error
+  }
+
+  // Scope check: Cowork is still early research-preview territory. The CLI's
+  // hook subcommand only enforces graphs against tools that match the active
+  // vertical's tool surface. Built-in Cowork tools like "Bash", "Write",
+  // "Read" are out of scope — allow them through without enforcement for V1.
+  // (V2: consider per-vertical allowlists for built-in tools too.)
+  const verticalToolName = toolName;
+
+  const { state, sessions } = getOrCreateCoworkSessionState(sessionId, graph);
+  const result = enforceWorkflow(graph, state, verticalToolName, toolInput);
+  sessions[sessionId] = { ...state, last_seen: new Date().toISOString() };
+  saveCoworkSessions(sessions);
+
+  if (result.decision === "allow") {
+    // Check approval gate.
+    const requiresApproval =
+      Array.isArray(graph.requires_approval) &&
+      graph.requires_approval.includes(verticalToolName);
+
+    if (requiresApproval) {
+      const approvalId = crypto.randomUUID().slice(0, 8);
+      // Write the pending approval record into the shared queue so
+      // `betterclaw pending` / `betterclaw approve` see it alongside
+      // approvals generated by the OpenClaw plugin path.
+      const approvalRecord = {
+        id: approvalId,
+        node: state.currentNode,
+        tool: verticalToolName,
+        vertical: graph.vertical,
+        params: toolInput,
+        queued_at_ms: Date.now(),
+        source: "cowork",
+        session_id: sessionId,
+      };
+      try {
+        fs.mkdirSync(APPROVALS_DIR, { recursive: true });
+        fs.writeFileSync(
+          path.join(APPROVALS_DIR, `${approvalId}.pending`),
+          JSON.stringify(approvalRecord, null, 2),
+        );
+      } catch (err) {
+        process.stderr.write(
+          `[betterclaw-hook] approval write failed: ${err.message}\n`,
+        );
+        // Fail-closed: don't let the tool run if we couldn't queue the gate.
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason:
+              `Approval gate queueing failed (${err.message}). Tool blocked.`,
+          },
+        };
+      }
+
+      emitTelemetry("approve_queued", {
+        vertical: graph.vertical,
+        tool_name: verticalToolName,
+        source: "cowork",
+      });
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason:
+            `Approval required · id=${approvalId} · tool=${verticalToolName}\n` +
+            `This call is queued for out-of-band approval. Ask the user to:\n` +
+            `  betterclaw show ${approvalId}      (inspect the pending call)\n` +
+            `  betterclaw approve ${approvalId}   (dispatch it)\n` +
+            `  betterclaw deny ${approvalId}      (cancel it)\n` +
+            `If approved, the CLI will call the real backend; the result lands ` +
+            `in the user's real state (e.g. Gmail Drafts folder). The agent ` +
+            `turn can continue without waiting.`,
+        },
+      };
+    }
+
+    // Allow the tool call to proceed.
+    emitTelemetry("auto_allow", {
+      vertical: graph.vertical,
+      tool_name: verticalToolName,
+      source: "cowork",
+    });
+    return {};
+  }
+
+  // Blocked by workflow enforcement.
+  emitTelemetry("deviation_blocked", {
+    vertical: graph.vertical,
+    attempted_tool: verticalToolName,
+    from_node: state.currentNode,
+    retry: result.retry,
+    source: "cowork",
+  });
+  return {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: result.reason,
+    },
+  };
+}
+
+function handleUserPromptSubmitHook(_payload) {
+  // Surface recent approvals (past 24h, last 8) so the agent sees them in
+  // context and doesn't re-attempt handled tool calls. Same behavior as the
+  // OpenClaw plugin's MEMORY.md sync but delivered via the proper hook path.
+  const events = readRecentApprovalHistoryForHook();
+  const block = formatApprovalHistoryForAgent(events);
+  if (!block) return {};
+  return { systemMessage: block };
+}
+
+function handlePostToolCallHook(_payload) {
+  // For V1, PostToolCall is just informational. No enforcement after the fact.
+  // Telemetry for tool-completion timing is handled CLI-side on the approval
+  // dispatch path. Return empty to avoid any conversation-side effect.
+  return {};
+}
+
+// ---- MCP daemon ----
+
+// Runs the Gmail MCP proxy in the foreground. The daemon binds a Unix socket,
+// spawns @gongrzhe/server-gmail-autoauth-mcp as a single persistent child,
+// and multiplexes JSON-RPC messages between any number of connected clients
+// and that child. Each client's ID space is isolated via an upstream ID map.
+//
+// Returns a Promise that resolves when the daemon has shut down cleanly.
+function runMcpDaemonForeground({ quiet = false } = {}) {
+  return new Promise((resolve, reject) => {
+    _runMcpDaemonImpl({ quiet, resolve, reject });
+  });
+}
+
+function _runMcpDaemonImpl({ quiet, resolve, reject }) {
+  const log = (msg) => {
+    if (!quiet) process.stderr.write(`[mcp-daemon] ${msg}\n`);
+  };
+
+  // Clean up stale socket from a previous crashed daemon.
+  try {
+    fs.unlinkSync(MCP_SOCKET_PATH);
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      reject(new Error(`failed to clear stale socket at ${MCP_SOCKET_PATH}: ${err.message}`));
+      return;
+    }
+  }
+  try {
+    fs.mkdirSync(path.dirname(MCP_SOCKET_PATH), { recursive: true });
+  } catch {}
+
+  // --- Gmail MCP child management ---
+  let child = null;
+  let childBuffer = "";
+  let childAlive = false;
+  const respawns = []; // timestamps of recent respawn attempts
+  const pendingByUpstreamId = new Map(); // upstreamId -> { clientConn, clientId }
+  let nextUpstreamId = 1;
+
+  const spawnChild = () => {
+    const now = Date.now();
+    // Reap respawn timestamps older than 10 minutes.
+    while (respawns.length && now - respawns[0] > 10 * 60 * 1000) respawns.shift();
+    if (respawns.length >= 3) {
+      log(`child has crashed ${respawns.length} times in 10 min; not respawning`);
+      childAlive = false;
+      return;
+    }
+    respawns.push(now);
+
+    const c = spawn("npx", ["-y", "@gongrzhe/server-gmail-autoauth-mcp"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env },
     });
+    child = c;
+    childBuffer = "";
+    childAlive = true;
+    log(`child spawned (pid=${c.pid})`);
 
+    c.stdout.setEncoding("utf8");
+    c.stdout.on("data", (chunk) => {
+      childBuffer += chunk;
+      let idx;
+      while ((idx = childBuffer.indexOf("\n")) !== -1) {
+        const line = childBuffer.slice(0, idx).trim();
+        childBuffer = childBuffer.slice(idx + 1);
+        if (!line) continue;
+        routeChildMessageToClient(line);
+      }
+    });
+
+    c.stderr.on("data", (chunk) => {
+      // Gmail MCP stderr is noisy (OAuth prompts, etc.); log only if not quiet.
+      if (!quiet) process.stderr.write(`[gmail-child] ${chunk}`);
+    });
+
+    c.on("exit", (code, signal) => {
+      log(`child exited code=${code} signal=${signal}`);
+      child = null;
+      childAlive = false;
+      // Fail any pending requests; clients see an error.
+      for (const entry of pendingByUpstreamId.values()) {
+        try {
+          entry.clientConn.write(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: entry.clientId,
+              error: { code: -32000, message: `gmail MCP child exited (code=${code} signal=${signal})` },
+            }) + "\n",
+          );
+        } catch {}
+      }
+      pendingByUpstreamId.clear();
+      // Respawn if we haven't hit the crash-loop limit.
+      if (!shuttingDown) spawnChild();
+    });
+
+    c.on("error", (err) => log(`child spawn error: ${err.message}`));
+  };
+
+  const sendToChild = (msg) => {
+    if (!child || !childAlive) {
+      return false;
+    }
+    try {
+      child.stdin.write(JSON.stringify(msg) + "\n");
+      return true;
+    } catch (err) {
+      log(`child stdin write error: ${err.message}`);
+      return false;
+    }
+  };
+
+  const routeChildMessageToClient = (line) => {
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      log(`non-JSON from child: ${line.slice(0, 120)}`);
+      return;
+    }
+    if (msg.id === undefined) {
+      // Notification from child — broadcast to all clients? For BetterClaw's
+      // V1 usage we don't need it. Drop.
+      return;
+    }
+    const entry = pendingByUpstreamId.get(msg.id);
+    if (!entry) {
+      log(`response for unknown upstream id=${msg.id}; dropping`);
+      return;
+    }
+    pendingByUpstreamId.delete(msg.id);
+    const rewritten = { ...msg, id: entry.clientId };
+    try {
+      entry.clientConn.write(JSON.stringify(rewritten) + "\n");
+    } catch (err) {
+      log(`client write error (client disconnected mid-flight): ${err.message}`);
+    }
+  };
+
+  // --- socket server ---
+  const server = net.createServer((clientConn) => {
+    log(`client connected`);
+    let clientBuffer = "";
+    clientConn.setEncoding("utf8");
+
+    clientConn.on("data", (chunk) => {
+      clientBuffer += chunk;
+      let idx;
+      while ((idx = clientBuffer.indexOf("\n")) !== -1) {
+        const line = clientBuffer.slice(0, idx).trim();
+        clientBuffer = clientBuffer.slice(idx + 1);
+        if (!line) continue;
+        handleClientMessage(clientConn, line);
+      }
+    });
+
+    clientConn.on("close", () => {
+      log(`client disconnected`);
+      // Drop any pending upstream requests owned by this client so their
+      // responses don't try to write to a closed socket.
+      for (const [uid, entry] of pendingByUpstreamId) {
+        if (entry.clientConn === clientConn) pendingByUpstreamId.delete(uid);
+      }
+    });
+
+    clientConn.on("error", (err) => {
+      log(`client socket error: ${err.message}`);
+    });
+  });
+
+  const handleClientMessage = (clientConn, line) => {
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      log(`non-JSON from client: ${line.slice(0, 120)}`);
+      return;
+    }
+    // Handle initialize locally so multiple clients can coexist without
+    // re-initializing the shared child. The daemon synthesizes a success
+    // response with the child's (assumed) capabilities.
+    if (msg.method === "initialize") {
+      const reply = {
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          protocolVersion: "2024-11-05",
+          capabilities: { tools: {} },
+          serverInfo: { name: "betterclaw-mcp-proxy", version: "0.1.0" },
+        },
+      };
+      clientConn.write(JSON.stringify(reply) + "\n");
+      return;
+    }
+    if (msg.method === "notifications/initialized") {
+      // Client signals readiness. Nothing to do.
+      return;
+    }
+    // Everything else gets proxied to the child with ID rewriting.
+    if (msg.id !== undefined) {
+      if (!childAlive) {
+        clientConn.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            error: { code: -32000, message: "gmail MCP child not running (crash-loop or not yet started)" },
+          }) + "\n",
+        );
+        return;
+      }
+      const upstreamId = nextUpstreamId++;
+      pendingByUpstreamId.set(upstreamId, { clientConn, clientId: msg.id });
+      const forwarded = { ...msg, id: upstreamId };
+      if (!sendToChild(forwarded)) {
+        pendingByUpstreamId.delete(upstreamId);
+        clientConn.write(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            error: { code: -32000, message: "failed to forward to gmail MCP child" },
+          }) + "\n",
+        );
+      }
+    } else {
+      // Notification — forward, no tracking.
+      sendToChild(msg);
+    }
+  };
+
+  // --- shutdown ---
+  let shuttingDown = false;
+  const shutdown = (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    log(`shutting down (${signal})`);
+    try {
+      server.close();
+    } catch {}
+    try {
+      fs.unlinkSync(MCP_SOCKET_PATH);
+    } catch {}
+    try {
+      fs.unlinkSync(MCP_PID_PATH);
+    } catch {}
+    if (child) {
+      try {
+        child.stdin.end();
+      } catch {}
+      try {
+        child.kill("SIGTERM");
+      } catch {}
+    }
+    resolve();
+    // Give the socket a moment to close before exiting.
+    setTimeout(() => process.exit(0), 100).unref();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+
+  // --- start ---
+  server.on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      reject(
+        new Error(
+          `socket ${MCP_SOCKET_PATH} is already in use — another daemon running? Try \`betterclaw stop\` first.`,
+        ),
+      );
+      return;
+    }
+    reject(err);
+  });
+
+  server.listen(MCP_SOCKET_PATH, () => {
+    try {
+      fs.chmodSync(MCP_SOCKET_PATH, 0o600);
+    } catch {}
+    // Write our PID so `betterclaw stop` can find us.
+    try {
+      fs.writeFileSync(MCP_PID_PATH, String(process.pid) + "\n");
+    } catch {}
+    log(`listening on ${MCP_SOCKET_PATH} (pid=${process.pid})`);
+    spawnChild();
+  });
+}
+
+function startDetachedDaemon() {
+  maybeShowFirstRunNotice();
+  // Idempotent: if a live daemon is already running, do nothing.
+  const status = readDaemonStatus();
+  if (status.running) {
+    console.log(`  ${allow("✓")}  Daemon already running (pid=${status.pid})`);
+    return;
+  }
+  // Clear any stale PID file.
+  if (status.staleFile) {
+    try {
+      fs.unlinkSync(MCP_PID_PATH);
+    } catch {}
+  }
+
+  // Open the log file for the detached daemon's stderr.
+  try {
+    fs.mkdirSync(path.dirname(MCP_LOG_PATH), { recursive: true });
+  } catch {}
+  const logFd = fs.openSync(MCP_LOG_PATH, "a");
+  const cliPath = process.argv[1];
+  const child = spawn(process.execPath, [cliPath, "mcp-daemon", "--foreground", "--quiet"], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    env: process.env,
+  });
+  child.unref();
+
+  const identityWasNew = !fs.existsSync(IDENTITY_PATH);
+  if (identityWasNew) {
+    emitTelemetry("install", { first_time: true });
+  }
+  emitTelemetry("daemon_start", { pid: child.pid });
+  maybeShowFeedbackCTA();
+
+  // Wait briefly for the daemon to come up (socket visible). spawnSync a
+  // short sleep so we don't busy-loop; this runs from a user-initiated CLI
+  // command so blocking briefly is fine.
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < 3000) {
+    if (fs.existsSync(MCP_SOCKET_PATH) && fs.existsSync(MCP_PID_PATH)) {
+      console.log(`  ${allow("✓")}  Daemon started (pid=${child.pid}, log=${MCP_LOG_PATH})`);
+      return;
+    }
+    spawnSync("sleep", ["0.05"]);
+  }
+  console.error(`  ${deny("✗")}  Daemon failed to come up within 3s — see ${MCP_LOG_PATH}`);
+  process.exitCode = 1;
+}
+
+function stopDaemon() {
+  const status = readDaemonStatus();
+  if (!status.running) {
+    if (status.staleFile) {
+      try {
+        fs.unlinkSync(MCP_PID_PATH);
+      } catch {}
+    }
+    console.log(`  ${dim("—")}  No daemon running`);
+    return;
+  }
+  try {
+    process.kill(status.pid, "SIGTERM");
+    console.log(`  ${allow("✓")}  Sent SIGTERM to pid=${status.pid}`);
+  } catch (err) {
+    console.error(`  ${deny("✗")}  Failed to stop pid=${status.pid}: ${err.message}`);
+    process.exitCode = 1;
+  }
+}
+
+function printDaemonStatus() {
+  const status = readDaemonStatus();
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Daemon status"));
+  console.log("  " + ui.hr());
+  if (status.running) {
+    console.log(`  ${allow("✓")}  Running   ${gray("pid=" + status.pid)}`);
+    console.log(`  ${dim("socket  ")}  ${MCP_SOCKET_PATH}`);
+    console.log(`  ${dim("log     ")}  ${MCP_LOG_PATH}`);
+  } else if (status.staleFile) {
+    console.log(`  ${deny("✗")}  Stale PID file (pid=${status.pid} not alive). Run \`betterclaw start\`.`);
+  } else {
+    console.log(`  ${dim("—")}  Not running. Run \`betterclaw start\` to launch.`);
+  }
+  console.log();
+}
+
+function readDaemonStatus() {
+  if (!fs.existsSync(MCP_PID_PATH)) {
+    return { running: false, staleFile: false, pid: null };
+  }
+  const raw = (() => {
+    try {
+      return fs.readFileSync(MCP_PID_PATH, "utf8").trim();
+    } catch {
+      return "";
+    }
+  })();
+  const pid = parseInt(raw, 10);
+  if (!pid || Number.isNaN(pid)) {
+    return { running: false, staleFile: true, pid: null };
+  }
+  try {
+    // kill(pid, 0) probes liveness without signaling.
+    process.kill(pid, 0);
+    return { running: true, staleFile: false, pid };
+  } catch {
+    return { running: false, staleFile: true, pid };
+  }
+}
+
+function ensureDaemonRunning() {
+  const status = readDaemonStatus();
+  if (status.running) return;
+  console.log(`  ${dim("…")}  Daemon not running; starting it now`);
+  startDetachedDaemon();
+}
+
+// ---- dispatch to the daemon (replaces the old per-call-spawn function) ----
+
+async function dispatchToGmailMcp(toolName, params) {
+  // Connect to the running daemon, send a single tools/call, close.
+  // If the daemon isn't up, return a structured error explaining how to fix it.
+  return new Promise((resolve) => {
+    const socket = net.createConnection(MCP_SOCKET_PATH);
     let buffer = "";
     let finished = false;
-    const pending = new Map();
-    let nextId = 1;
+    const CONNECT_TIMEOUT_MS = 3000;
+    const CALL_TIMEOUT_MS = 30000;
+
+    const connectTimer = setTimeout(() => {
+      if (finished) return;
+      try { socket.destroy(); } catch {}
+      finish({
+        ok: false,
+        error: `daemon connect timeout at ${MCP_SOCKET_PATH} — run \`betterclaw start\``,
+      });
+    }, CONNECT_TIMEOUT_MS);
+
+    const callTimer = setTimeout(() => {
+      if (finished) return;
+      try { socket.destroy(); } catch {}
+      finish({ ok: false, error: `daemon call timeout after ${CALL_TIMEOUT_MS}ms` });
+    }, CALL_TIMEOUT_MS);
 
     const finish = (result) => {
       if (finished) return;
       finished = true;
-      try { child.stdin.end(); } catch {}
-      try { child.kill("SIGTERM"); } catch {}
+      clearTimeout(connectTimer);
+      clearTimeout(callTimer);
+      try { socket.end(); } catch {}
       resolve(result);
     };
 
-    const send = (method, params, isNotification = false) => {
-      const id = isNotification ? undefined : nextId++;
-      const payload = { jsonrpc: "2.0", method };
-      if (id !== undefined) payload.id = id;
-      if (params !== undefined) payload.params = params;
-      const line = JSON.stringify(payload) + "\n";
-      return new Promise((res, rej) => {
-        if (!isNotification) pending.set(id, { resolve: res, reject: rej });
-        child.stdin.write(line, (err) => {
-          if (err) {
-            if (!isNotification) pending.delete(id);
-            rej(err);
-          }
-          if (isNotification) res();
-        });
-      });
+    const send = (msg) => {
+      socket.write(JSON.stringify(msg) + "\n");
     };
 
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
+    socket.setEncoding("utf8");
+
+    socket.on("connect", () => {
+      clearTimeout(connectTimer);
+      // Initialize, then tools/call. ID 1 = initialize, ID 2 = tools/call.
+      send({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "betterclaw-cli", version: "0.1.0" },
+        },
+      });
+      send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      send({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: toolName, arguments: params ?? {} },
+      });
+    });
+
+    socket.on("data", (chunk) => {
       buffer += chunk;
       let idx;
       while ((idx = buffer.indexOf("\n")) !== -1) {
@@ -1564,53 +2827,43 @@ async function dispatchToGmailMcp(toolName, params) {
         if (!line) continue;
         let msg;
         try { msg = JSON.parse(line); } catch { continue; }
-        if (msg.id !== undefined && pending.has(msg.id)) {
-          const { resolve: res, reject: rej } = pending.get(msg.id);
-          pending.delete(msg.id);
-          if (msg.error) rej(new Error(`MCP error: ${JSON.stringify(msg.error)}`));
-          else res(msg.result);
+        if (msg.id === 2) {
+          // The tools/call response.
+          if (msg.error) {
+            finish({ ok: false, error: `MCP error: ${JSON.stringify(msg.error)}` });
+            return;
+          }
+          const result = msg.result;
+          const textParts = (result?.content ?? [])
+            .filter((c) => c.type === "text")
+            .map((c) => c.text)
+            .join("\n");
+          finish({
+            ok: !result?.isError,
+            summary: textParts || "(no content returned)",
+            next_hint: toolName === "draft_email"
+              ? "Open your Gmail Drafts folder to review."
+              : null,
+            error: result?.isError ? textParts : undefined,
+          });
         }
       }
     });
 
-    child.stderr.on("data", (chunk) => {
-      // Gmail MCP logs to stderr; don't pollute our output.
-      void chunk;
-    });
-
-    child.on("error", (err) => finish({ ok: false, error: `spawn error: ${err.message}` }));
-    child.on("exit", (code, signal) => {
-      if (!finished) {
-        finish({ ok: false, error: `gmail MCP exited early (code=${code} signal=${signal})` });
-      }
-    });
-
-    (async () => {
-      try {
-        await send("initialize", {
-          protocolVersion: "2024-11-05",
-          capabilities: {},
-          clientInfo: { name: "betterclaw-cli", version: "0.1.0" },
-        });
-        await send("notifications/initialized", {}, true);
-        const result = await send("tools/call", { name: toolName, arguments: params ?? {} });
-        // Extract the Gmail MCP's human-readable summary from the content blocks.
-        const textParts = (result?.content ?? [])
-          .filter((c) => c.type === "text")
-          .map((c) => c.text)
-          .join("\n");
+    socket.on("error", (err) => {
+      if (err.code === "ENOENT") {
         finish({
-          ok: !result?.isError,
-          summary: textParts || "(no content returned)",
-          next_hint: toolName === "draft_email"
-            ? "Open your Gmail Drafts folder to review."
-            : null,
-          error: result?.isError ? textParts : undefined,
+          ok: false,
+          error: `daemon not running (no socket at ${MCP_SOCKET_PATH}). Run \`betterclaw start\` first.`,
         });
-      } catch (err) {
-        finish({ ok: false, error: err.message || String(err) });
+      } else {
+        finish({ ok: false, error: `daemon socket error: ${err.message}` });
       }
-    })();
+    });
+
+    socket.on("close", () => {
+      if (!finished) finish({ ok: false, error: "daemon closed connection before responding" });
+    });
   });
 }
 
@@ -1622,7 +2875,7 @@ function viewLastRun() {
   if (!fs.existsSync(RUN_LOG_PATH) || fs.statSync(RUN_LOG_PATH).size === 0) {
     console.error(
       `error: no run log at ${RUN_LOG_PATH}\n` +
-        `       Run the agent once: \`openclaw agent --local --agent main -m "<task>"\``,
+        `       Run the agent once: \`betterclaw run "<task>"\``,
     );
     process.exit(1);
   }
@@ -1717,7 +2970,7 @@ async function startWatchServer() {
   console.log(`  ${bold("Serving at")} ${accent(url)}`);
   console.log();
   console.log("  " + dim("Leave this running. In another terminal:"));
-  console.log("    " + accent(`openclaw agent --local --agent main -m "<your task>"`));
+  console.log("    " + accent(`betterclaw run "<your task>"`));
   console.log();
   console.log("  " + dim("Ctrl+C here to stop."));
   console.log();
