@@ -2,6 +2,10 @@
   "id": "betterclaw",
   "name": "BetterClaw",
   "description": "Workflow-enforcement plugin for OpenClaw — snaps agents back when they try to step outside their declared workflow.",
+  "compat": {
+    "pluginApi": ">=2026.4.24",
+    "minGatewayVersion": "2026.4.24"
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false

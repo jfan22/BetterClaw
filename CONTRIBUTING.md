@@ -119,7 +119,7 @@ betterclaw view                      # see the replay
 
 ## Filing bugs
 
-- **OpenClaw-side bugs** (hook wrapping, plugin SDK gaps): open an issue in the OpenClaw repo. Known upstream work we depend on: PR #70147 (`before_tool_call` hook wrap fix in `mcp-http.handlers.ts`) and PR #70169 (`before_prompt_build` for the cli-runner path). When both merge we drop the manual hook wrap in `packages/plugin-openclaw/index.mjs` and the MEMORY.md cross-turn surfacing workaround. See [ROADMAP.md § Maintenance / upstream](./ROADMAP.md#maintenance--upstream) for status.
+- **OpenClaw-side bugs** (hook wrapping, plugin SDK gaps): open an issue in the OpenClaw repo. BetterClaw v0.2.1+ requires openclaw ≥ 2026.4.24 (the version that ships PR #71159's `before_tool_call` hook wiring and PR #70625's `before_prompt_build` cli-runner fix). If you hit a hook-firing issue, first verify via `openclaw --version` that you're on 2026.4.24 or later.
 - **BetterClaw-side bugs**: open an issue here. Include `betterclaw doctor` output, the active graph, and the run.jsonl if available.
 
 ## License

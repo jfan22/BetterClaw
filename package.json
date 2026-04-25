@@ -1,6 +1,6 @@
 {
   "name": "betterclaw-project",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Workflow-enforced AI agents for OpenClaw (and soon Cowork). Paragraph-in, graph-out, workflow-enforced.",
   "scripts": {

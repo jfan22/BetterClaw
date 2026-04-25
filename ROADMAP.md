@@ -17,7 +17,6 @@ What we're working on next, in rough order. No commitments — we ship when we s
 
 ## Maintenance / upstream
 
-- **Upstream OpenClaw fixes** — PR #70147 (`before_tool_call` hook wrap fix in `mcp-http.handlers.ts`) and PR #70169 (`before_prompt_build` for the cli-runner path). When both merge we drop the manual hook wrap in `packages/plugin-openclaw/index.mjs` and the MEMORY.md cross-turn-surfacing workaround. Track via the linked PRs on `openclaw/openclaw`.
 - **Cowork plugin perf.** Today `betterclaw hook <event>` cold-starts Node per invocation (~100-150ms). If users hit this in practice, a socket-resident enforcement path on the daemon brings it down to ~7ms (verified in the spike).
 
 ## Want to influence the order?

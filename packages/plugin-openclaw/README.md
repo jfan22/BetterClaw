@@ -37,9 +37,12 @@ openclaw config set plugins.allow '["betterclaw"]'
 
 ## Architecture notes
 
-The plugin manually invokes `before_tool_call` via `getGlobalHookRunner()` because OpenClaw's host-side hook wrap doesn't fire for plugin-served tools in the `agent --local` path — until upstream PR [#70147](https://github.com/openclaw/openclaw/pull/70147) lands. `index.mjs:wrapExecuteWithHook` owns that.
+Enforcement registers two native OpenClaw hooks via `api.on(...)`:
 
-Cross-turn approval state (what you approved last week, so the agent doesn't re-draft it) surfaces via `~/.openclaw/workspace/MEMORY.md` until upstream PR [#70169](https://github.com/openclaw/openclaw/pull/70169) lands. `index.mjs:syncRecentApprovalsToMemoryFile` owns that.
+- **`before_tool_call`** — runs the workflow gate. Decides allow / block / queue-for-approval. Fires for plugin-served tools as of openclaw 2026.4.24 (upstream PR [#71159](https://github.com/openclaw/openclaw/pull/71159)).
+- **`before_prompt_build`** — surfaces recent out-of-band approvals so the agent sees what the user handled in another shell. Returns `{ prependContext }` which OpenClaw splices into the system prompt for the next turn. Fires on the cli-runner path as of openclaw 2026.4.24 (upstream PR [#70625](https://github.com/openclaw/openclaw/pull/70625)).
+
+Earlier BetterClaw versions (v0.2.0 and prior) carried workarounds for both upstream gaps. v0.2.1 dropped them and bumped `openclaw.compat.minGatewayVersion` to `2026.4.24`. Plugin boot includes a one-shot cleanup that strips any leftover `<!-- BEGIN betterclaw:recent_approvals -->` block from `~/.openclaw/workspace/MEMORY.md` for users upgrading from v0.2.0.
 
 ## Testing
 

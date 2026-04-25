@@ -100,7 +100,7 @@ The daemon (`betterclaw start` / `stop` / `status`) owns the Gmail MCP subproces
 
 ## Implementation notes
 
-Enforcement currently lives inline at the top of each tool handler in `packages/plugin-openclaw/index.mjs` — the plugin manually invokes `before_tool_call` via `getGlobalHookRunner()` because OpenClaw's host-side hook wrap doesn't fire for plugin-served tools in the `agent --local` path. Upstream PR [#70147](https://github.com/openclaw/openclaw/pull/70147) fixes this; once it merges and we depend on a release including it, we drop the manual wrap. Same story for cross-turn approval surfacing: the plugin writes `~/.openclaw/workspace/MEMORY.md` instead of using `before_prompt_build` until upstream PR [#70169](https://github.com/openclaw/openclaw/pull/70169) lands. Architecture decisions are tracked in [`docs/adrs/`](./docs/adrs/).
+Enforcement registers two native OpenClaw hooks: `before_tool_call` for the workflow gate (block deviations, queue approvals, allow valid tool calls) and `before_prompt_build` for cross-turn approval surfacing (the agent sees what the user already approved or denied out-of-band). Both fire natively as of [openclaw 2026.4.24](https://github.com/openclaw/openclaw/releases) — earlier BetterClaw releases (v0.2.0 and earlier) carried workarounds for two upstream gaps that have since been fixed (PRs [#71159](https://github.com/openclaw/openclaw/pull/71159) and [#70625](https://github.com/openclaw/openclaw/pull/70625)). Architecture decisions are tracked in [`docs/adrs/`](./docs/adrs/).
 
 ## Project layout
 
