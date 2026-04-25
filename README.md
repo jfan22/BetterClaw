@@ -1,10 +1,20 @@
 # BetterClaw
 
-**v0.2.0** — monorepo + daemon release. Status: validating the V1 wedge with real users; not production-ready.
+**v0.2.0** — workflow-enforced AI agents
 
-Paragraph-in, workflow-enforced AI agents. Wraps OpenClaw (and soon Anthropic Cowork) with a plugin that (a) exposes scoped tools via a loopback MCP, (b) enforces a declared workflow graph on every tool call, (c) snaps the agent back when it tries to step outside the declared workflow, (d) can pause mid-run on sensitive tool calls and resume after human approval, (e) writes a cross-turn audit log so future sessions see what the user already handled.
+BetterClaw creates workflow-enforced AI agents. It wraps [OpenClaw](https://openclaw.ai) and [Anthropic Cowork](https://claude.com/product/claude-cowork) (with [Nous Research Hermes](https://nousresearch.com/hermes-3) and OpenAI agent runtimes on the roadmap) via a plugin that (a) enforces a declared workflow graph on every tool call, (b) snaps the agent back when it tries to step outside the declared workflow, (c) can pause mid-run on sensitive tool calls and resume after human approval, (d) writes a cross-turn audit log so future sessions see what the user already handled.
 
-Four verticals ship today: **email** (real Gmail), **shopping** (real dummyjson.com catalog), **sales** and **travel** (stubs, V2 gets HubSpot MCP and Amadeus/Duffel respectively). Roadmap + deferred work lives in [TODOS.md](./TODOS.md).
+## Why is this useful?
+
+Three reasons: **compliance**, **security**, and **tracking**.
+
+**Compliance.** Enterprises often require specific workflows for regulatory or audit reasons — "the agent must route every refund over $500 to finance, every legal redline to counsel, every customer-data export to the DPO." A declared workflow makes that requirement enforceable instead of aspirational. Auditors get exportable evidence; the agent can't quietly drift.
+
+**Security.** Agents that run within a declared workflow can't be hijacked into unintended actions by malicious inputs (prompt injection, supply-chain prompts, hostile email content, manipulated retrieval). Anything outside the graph is blocked and flagged, so a compromised input has a bounded blast radius.
+
+**Tracking.** A persistent audit log records every tool call — allowed, blocked, approved, denied — so reviewers can answer "what did the agent do this week?" without reading transcripts. Behavior outside the graph is especially visible, and approvals carry the approver's identity for downstream investigation.
+
+Four verticals ship today: **email** (real Gmail), **shopping** (real dummyjson.com catalog), **sales** and **travel** (stubs, V2 swaps in real CRM and travel APIs respectively). Upcoming work lives in [ROADMAP.md](./ROADMAP.md).
 
 ## Start here
 
@@ -12,12 +22,11 @@ Four verticals ship today: **email** (real Gmail), **shopping** (real dummyjson.
 |---|---|
 | Install and run it in 5 minutes | [QUICKSTART.md](./QUICKSTART.md) |
 | Understand the design system | [DESIGN.md](./DESIGN.md) |
-| See what's deferred / in-progress | [TODOS.md](./TODOS.md) |
+| See what's coming next | [ROADMAP.md](./ROADMAP.md) |
 | See what shipped in this release | [CHANGELOG.md](./CHANGELOG.md) |
 | Contribute (or add a vertical) | [CONTRIBUTING.md](./CONTRIBUTING.md) |
 | Release / publish to npm | [RELEASING.md](./RELEASING.md) |
 | License | [Apache-2.0](./LICENSE) |
-| Read the build log for v0.1 → v0.3 | [RETRO.md](./RETRO.md) |
 | Architecture decisions | [docs/adrs/](./docs/adrs/) |
 | The original product pitch | [prompt.md](./prompt.md) |
 
@@ -34,30 +43,16 @@ BetterClaw compiles to one of four verticals per workflow. The compiler auto-det
 
 Verticals live in `packages/plugin-openclaw/vertical-*.mjs` — adding a new one is: write a file that exports a `{id, tools, guidance_for_compiler}` object, import it in `index.mjs`, add an entry to `VERTICAL_GUIDANCE` in `packages/cli/bin/betterclaw`. ~50 LOC per vertical for the tool stubs. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full recipe.
 
-## Status — v1 demo shippable (2026-04-21)
-
-- [x] Node 22 installed via nvm (default alias)
-- [x] OpenClaw CLI installed globally (`openclaw@latest`, v2026.4.15)
-- [x] Gmail OAuth (throwaway test account, `~/.gmail-mcp/credentials.json`)
-- [x] BetterClaw plugin installed (link mode) at `~/.openclaw/extensions/betterclaw/`
-- [x] Gmail-shaped loopback tools: `gmail_search`, `gmail_read`, `gmail_draft`, `gmail_ping`
-- [x] Plugin-owned child Gmail MCP (`@gongrzhe/server-gmail-autoauth-mcp` spawned via stdio)
-- [x] Inline workflow enforcement (gate at the top of each tool handler)
-- [x] Paragraph → workflow graph compiler (`betterclaw "..."` via `claude -p`)
-- [x] Mermaid HTML visual confirmation + y/N approval gate
-- [x] Test inbox seeded with 5+ emails including a prompt-injection one
-- [x] End-to-end verified: happy path + deviation block + prompt-injection defense
-
 ## Quick demo
 
 ```bash
 # 1. Compile a paragraph into a workflow graph. Opens Mermaid in your browser.
 betterclaw "triage my inbox: flag anything from investors, draft replies for customer questions, ignore newsletters"
 
-# 2. Review the graph in the browser. Approve with y in the terminal.
+# 2. Review the graph in the browser. Answer y at the terminal prompt.
 
 # 3. Run the agent. The new graph is picked up on the next turn.
-openclaw agent --local --agent main -m "triage my inbox"
+betterclaw run "triage my inbox"
 
 # 4. View a replay of what just happened
 betterclaw view
@@ -66,15 +61,11 @@ betterclaw view
 # Terminal A:
 betterclaw view --watch
 # Terminal B:
-openclaw agent --local --agent main -m "triage my inbox"
+betterclaw run "triage my inbox"
 # Browser auto-refreshes every 500ms as the agent steps through the graph.
 ```
 
-You'll see `[ALLOW] node=... tool=...` lines on stderr as the agent walks
-through the graph, and `[DEVIATION] ...` lines (+ a structured error visible
-to the agent) whenever it tries a tool outside the current node's allowlist.
-The same events land as JSONL in `~/.openclaw/extensions/betterclaw/run.jsonl`
-and drive the replay / live views.
+You'll see `[ALLOW] node=... tool=...` lines on stderr as the agent walks through the graph, and `[DEVIATION] ...` lines (with a structured error visible to the agent) whenever it tries a tool outside the current node's allowlist. The same events land as JSONL in `packages/plugin-openclaw/run.jsonl` and drive the replay / live views.
 
 ## Architecture snapshot
 
@@ -107,17 +98,9 @@ BetterClaw plugin (packages/plugin-openclaw/index.mjs)
 
 The daemon (`betterclaw start` / `stop` / `status`) owns the Gmail MCP subprocess on behalf of both the plugin and the CLI's approval dispatcher. Because the plugin is pure code (no `child_process.spawn`), `openclaw plugins install` no longer requires the `--dangerously-force-unsafe-install` flag. Gmail OAuth state also persists across agent turns via the one long-lived child.
 
-## Architecture notes that differ from the design doc
+## Implementation notes
 
-The design originally specified **A'''** — an OpenClaw plugin that registers
-`before_tool_call` via `api.on("before_tool_call", handler)`. In practice, the
-hook registers without error but does not fire on plugin-served tools in the
-`openclaw agent --local` subprocess path. We pivoted to **inline enforcement
-inside each tool handler** — same net behavior, simpler code, works by
-construction because the handler itself is definitely invoked.
-
-Everything else in the design doc carried over intact: the graph schema,
-transition rules, circuit breaker, Mermaid viz, paragraph compiler.
+Enforcement currently lives inline at the top of each tool handler in `packages/plugin-openclaw/index.mjs` — the plugin manually invokes `before_tool_call` via `getGlobalHookRunner()` because OpenClaw's host-side hook wrap doesn't fire for plugin-served tools in the `agent --local` path. Upstream PR [#70147](https://github.com/openclaw/openclaw/pull/70147) fixes this; once it merges and we depend on a release including it, we drop the manual wrap. Same story for cross-turn approval surfacing: the plugin writes `~/.openclaw/workspace/MEMORY.md` instead of using `before_prompt_build` until upstream PR [#70169](https://github.com/openclaw/openclaw/pull/70169) lands. Architecture decisions are tracked in [`docs/adrs/`](./docs/adrs/).
 
 ## Project layout
 
@@ -128,7 +111,8 @@ BetterClaw/
 ├── README.md                           this file
 ├── prompt.md                           original pitch
 ├── DESIGN.md                           dual-aesthetic design system
-├── TODOS.md                            deferred work with context
+├── ROADMAP.md                          what's coming next
+├── CHANGELOG.md                        release history
 ├── pnpm-workspace.yaml                 workspace manifest
 ├── packages/
 │   ├── cli/                            @betterclaw/cli
@@ -184,9 +168,15 @@ betterclaw diff <a> <b>        # side-by-side Mermaid diff — grey=same, yellow
 betterclaw publish <name> --to gist   # publish via `gh gist create` (requires gh CLI)
 
 # Run the agent
-openclaw agent --local --agent main -m "<task>"
+betterclaw run "<task>"        # auto-starts daemon, wraps `openclaw agent --local`
+
+# Daemon
+betterclaw start               # start the Gmail MCP proxy daemon (idempotent)
+betterclaw stop                # stop
+betterclaw status              # pid, socket, log path
 
 # Diagnostics
+betterclaw doctor              # full setup check
 openclaw plugins list
 openclaw plugins inspect betterclaw
 openclaw mcp list
@@ -209,19 +199,6 @@ The `betterclaw diff <a> <b>` command renders both graphs side-by-side in one HT
 
 Distribution is GitHub gists, not a custom platform. Git handles versioning; GitHub handles discovery; `gh` handles uploads. If/when this scales, ClawHub is the obvious next step.
 
-## Known issues / future work (weekend 2+)
+## What's next
 
-- **Hook-based enforcement** — investigate why `api.on("before_tool_call")`
-  doesn't fire for plugin tools in the `agent --local` path. Once fixed, move
-  enforcement from inline gate → proper plugin hook (gets us ctx.sessionKey for
-  real per-session isolation).
-- **Live workflow timeline UI** — design doc's "replay-diff" idea: ghosted
-  branch showing what the agent tried vs what got allowed.
-- **More Gmail tools** — `gmail_modify` (labels, flag, archive), `gmail_send`
-  once the workflow is trusted. Currently v1 only drafts.
-- **Multi-vertical** — sales outreach, travel, shopping. Compiler prompt needs
-  per-vertical tuning.
-- **CI/CD + distribution** — package as npm / ClawHub. Install path is now
-  `openclaw plugins install --link <path>` (the `--dangerously-force-unsafe-install`
-  flag was dropped in the 2026-04-24 Gmail-MCP-to-daemon migration — the plugin
-  no longer spawns subprocesses, so OpenClaw's safety scanner passes cleanly).
+See [ROADMAP.md](./ROADMAP.md) for the planned V2 / V3 work — real backends for the stub verticals, more vertical types, multi-user approval routing, dry-run mode, marketplace, and adapters for additional agent runtimes. Open an issue if you want to influence priority.

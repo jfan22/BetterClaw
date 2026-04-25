@@ -2,7 +2,7 @@
 
 All notable changes to BetterClaw are documented here.
 
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels (see [RETRO.md](./RETRO.md) for the v0.1 → v0.3 build log).
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
 ## [0.2.0] — 2026-04-24
 
@@ -20,7 +20,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterC
 - **`betterclaw hook <event>` subcommand.** Internal entry point invoked by the Cowork plugin shim. Reads JSON from stdin, runs workflow enforcement, writes response JSON to stdout. Vendors `loadGraph`/`enforce`/`freshState` inline so the CLI is self-contained for npm publish. Per-session current-node tracking in `~/.betterclaw/cowork-sessions.json` (pruned after 1h idle). ADR 0001 updated from Proposed to Accepted based on empirical verification.
 - **npm publish readiness.** Both `@betterclaw/cli` and `betterclaw` (plugin) have `publishConfig`, `repository`, `keywords`, LICENSE + NOTICE in their tarballs. `npm pack --dry-run` verified: CLI = 5 files / 37kB, plugin = 13 files / 22kB. See [RELEASING.md](./RELEASING.md) for the publish playbook, [scripts/sync-license.sh](./scripts/sync-license.sh) to keep LICENSE/NOTICE in sync across packages, and [.github/workflows/ci.yml](./.github/workflows/ci.yml) for the CI checks (syntax, publish dry-run, PII audit, LICENSE sync).
 - **DESIGN.md** — design system spec with dual-aesthetic surface map (editorial for CLI/PDF cover, modern tech for web UI, native for Slack).
-- **TODOS.md** — V2 / V3 / horizon work items with full context per entry.
+- **ROADMAP.md** — public-facing summary of V2 / V3 work and upstream maintenance tracking.
 - **docs/adrs/0001-cowork-sdk-feasibility.md** — ADR accepting the Cowork plugin distribution path. Empirical verification via `spikes/cowork-hook-verify/`.
 - **spikes/cowork-hook-verify/** — minimal Cowork plugin that exercises PreToolUse, UserPromptSubmit, and PostToolUse hooks. Reference for the real `packages/plugin-cowork/` when V2 ships.
 
@@ -50,7 +50,7 @@ Plugin identity and `plugins.allow` config unchanged. Your saved graphs at `~/.b
 
 ## [0.1.0] — 2026-04-20 through 2026-04-22
 
-Initial BetterClaw build. See [RETRO.md](./RETRO.md) for the full two-day build log and lessons. Highlights:
+Initial BetterClaw build over two days. Highlights:
 
 - Paragraph-to-graph compiler via `claude -p`
 - OpenClaw plugin with workflow enforcement via inline `wrapExecuteWithHook`

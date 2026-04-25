@@ -37,9 +37,9 @@ openclaw config set plugins.allow '["betterclaw"]'
 
 ## Architecture notes
 
-The original design (A''') registered `before_tool_call` via `api.on(...)` and expected OpenClaw to wire the hook automatically. That path works for some tool dispatch routes but not for plugin-served tools via the `agent --local` loopback — until upstream PR #70147 lands. As a workaround, `index.mjs` manually wraps each tool's `execute` function with the hook runner via `getGlobalHookRunner()`. Verified in RETRO.md and ADRs.
+The plugin manually invokes `before_tool_call` via `getGlobalHookRunner()` because OpenClaw's host-side hook wrap doesn't fire for plugin-served tools in the `agent --local` path — until upstream PR [#70147](https://github.com/openclaw/openclaw/pull/70147) lands. `index.mjs:wrapExecuteWithHook` owns that.
 
-Cross-turn approval state (what you approved last week, so the agent doesn't re-draft it) surfaces via `~/.openclaw/workspace/MEMORY.md` until upstream PR #70169 lands. `index.mjs:syncRecentApprovalsToMemoryFile` owns that.
+Cross-turn approval state (what you approved last week, so the agent doesn't re-draft it) surfaces via `~/.openclaw/workspace/MEMORY.md` until upstream PR [#70169](https://github.com/openclaw/openclaw/pull/70169) lands. `index.mjs:syncRecentApprovalsToMemoryFile` owns that.
 
 ## Testing
 
