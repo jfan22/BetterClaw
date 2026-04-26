@@ -79,6 +79,7 @@ One row per attempted tool call — allowed, blocked, approved, denied — with 
 | Release / publish to npm | [RELEASING.md](./RELEASING.md) |
 | License | [Apache-2.0](./LICENSE) |
 | Architecture decisions | [docs/adrs/](./docs/adrs/) |
+| Workflow-enforcement spec (for other framework authors) | [docs/SPEC.md](./docs/SPEC.md) |
 | The original product pitch | [prompt.md](./prompt.md) |
 
 ## Where do tools come from?
