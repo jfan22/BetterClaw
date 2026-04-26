@@ -1,7 +1,7 @@
 {
-  "name": "betterclaw",
-  "version": "0.2.1",
-  "description": "Workflow-enforcement plugin for OpenClaw — snaps agents back when they try to step outside their declared workflow.",
+  "name": "@betterclaw-ai/plugin-openclaw",
+  "version": "0.3.0",
+  "description": "Workflow-enforcement layer for OpenClaw — gates AI agent tool calls against a declarative graph. Tools come from the host environment (Cowork connectors or user-installed MCP servers).",
   "license": "Apache-2.0",
   "author": "BetterClaw contributors",
   "homepage": "https://github.com/jfan22/BetterClaw",
@@ -17,19 +17,20 @@
     "openclaw-plugin",
     "workflow-enforcement",
     "ai-agents",
-    "gmail",
-    "approval-gate"
+    "approval-gate",
+    "audit-log",
+    "mcp"
   ],
   "type": "module",
   "files": [
     "index.mjs",
     "workflow.mjs",
+    "enforcement.mjs",
+    "history.mjs",
     "mcp-proxy-client.mjs",
     "telemetry.mjs",
     "vertical-email.mjs",
-    "vertical-shopping.mjs",
-    "vertical-sales.mjs",
-    "vertical-travel.mjs",
+    "demo-shopping.mjs",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE",
@@ -51,5 +52,8 @@
   },
   "engines": {
     "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

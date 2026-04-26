@@ -1,7 +1,0 @@
-{
-  "name": "travel-cheapest-flight",
-  "vertical": "travel",
-  "description": "Flight search + compare, no approval gates. Uses the embedded flight catalog (SFO/JFK/LHR + carriers). Replace the catalog with a real travel MCP (Amadeus, Sabre) to go beyond the demo set.",
-  "example_agent_message": "Find flights SFO to JFK under $400. Compare the two cheapest. Recommend one.",
-  "requires": []
-}

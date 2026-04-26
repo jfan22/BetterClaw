@@ -1,13 +1,15 @@
-// Shopping vertical — backed by https://dummyjson.com (free, no auth, 194
-// real products across 24 categories with server-side search + categories +
-// full product records including reviews). A step up from the initial embedded
-// catalog, and a step down from a real commercial API like Amazon's Product
-// Advertising. Zero account setup; works from any Node 22 environment.
+// Demo shopping module — TUTORIAL ONLY, NOT A REAL SHOPPING INTEGRATION.
 //
-// Swap this for a real commercial backend by implementing the same three
-// tool contracts (shop_search, shop_details, shop_compare) against whichever
-// API you have creds for — the workflow graph schema and BetterClaw plugin
-// don't know which backend they're talking to.
+// Backed by https://dummyjson.com (free, no auth, 194 fake products across
+// 24 categories). This exists so a brand-new user can run BetterClaw end-to-end
+// without setting up any external credentials. It is gated behind the
+// BETTERCLAW_DEMO=1 env var; the production plugin does not register these
+// tools by default.
+//
+// Real shopping/e-commerce integrations should come from the host environment
+// (Cowork connectors or user-installed MCP servers), not from BetterClaw.
+// The plugin's job is to enforce the workflow graph; the host's job is to
+// provide tools.
 
 import { Type } from "@sinclair/typebox";
 
@@ -56,9 +58,9 @@ function detail(p) {
   };
 }
 
-export const vertical = {
-  id: "shopping",
-  description: "Real product catalog search + compare via dummyjson.com (194 products, 24 categories).",
+export const demoShopping = {
+  id: "demo-shopping",
+  description: "DEMO ONLY (dummyjson.com fake catalog). Tutorial path so users can try BetterClaw without setting up real credentials. Not a production integration.",
   guidance_for_compiler: `
 AVAILABLE TOOLS — pick only from this list:
 - shop_search: keyword search across titles and descriptions. Server-side. Returns id+title+price+category+rating.

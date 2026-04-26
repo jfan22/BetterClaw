@@ -1,7 +1,6 @@
 {
   "name": "shopping-compare",
-  "vertical": "shopping",
-  "description": "Search → inspect → compare flow. No approval gates — the agent runs freely within the workflow. Great for a no-setup demo because the shopping catalog is embedded in the plugin.",
+  "description": "Tutorial demo. Search → inspect → compare flow against a fake catalog (dummyjson.com). No approval gates. Requires BETTERCLAW_DEMO=1 to register the `shop_search` / `shop_details` / `shop_compare` tools — they're demo tools, not production.",
   "example_agent_message": "Find me a good wireless mouse under $50. Search the catalog, inspect the top two, compare them, recommend one.",
-  "requires": []
+  "requires": ["BETTERCLAW_DEMO=1"]
 }

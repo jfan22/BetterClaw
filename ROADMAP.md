@@ -1,23 +1,37 @@
 # BetterClaw Roadmap
 
-What we're working on next, in rough order. No commitments — we ship when we ship, and signal from real users will reorder this list. File issues to vote on what should move up.
+What we're working on next, in rough order. No commitments, no timelines — we ship when we ship, and signal from real users will reorder this list. File issues to vote on what should move up.
 
-## V2 — next minor release
+## What runtimes BetterClaw enforces today
 
-- **Real backends for `sales` and `travel` verticals.** Sales swaps from stub catalog to a live CRM (HubSpot MCP candidate). Travel swaps to a live flight/hotel API (Amadeus or Duffel candidate).
-- **More verticals** — customer support (Intercom / Zendesk / Front), revenue ops (Salesforce / HubSpot CRM), DevOps automation (Kubernetes MCP, AWS CLI), finance ops (Brex / Ramp / QuickBooks). See [`packages/plugin-openclaw/README.md`](./packages/plugin-openclaw/README.md) for the vertical recipe and [CONTRIBUTING.md](./CONTRIBUTING.md) for how to add one.
-- **Approval routing.** Workflow graphs declare role + threshold rules ("drafts under $500 auto, $500-5k manager, $5k+ VP+legal") and the daemon routes the approval to the correct human. Today only the active user can approve; multi-user routing adds team-tier value.
-- **Dry-run mode (read-only tools).** Run a graph against historical data without external side effects. Useful for compliance officers reviewing a new agent before it touches production.
+v0.3.0 ships enforcement adapters for two agent runtimes:
 
-## V3 — exploratory
+| Runtime | Adapter |
+|---|---|
+| Claude Code (CLI) | `packages/plugin-openclaw` |
+| Claude Desktop (Cowork) | `packages/plugin-cowork` |
 
-- **Marketplace.** Public catalog of graphs with fork + attribution + commit history. Today's `betterclaw publish --to gist` is the seed; V3 turns it into a searchable, browsable surface.
-- **UX polish pack.** Paragraph-edit graph diff (highlight what changed before re-compile), what-if simulation (click a node, preview next 3 hypothetical actions), natural-language audit query ("show all money-moving actions in Q1").
-- **Third-framework adapter.** Reference implementation for one more agent runtime beyond OpenClaw and Cowork. Candidates: LangGraph, CrewAI, Claude Agent SDK, Nous Hermes.
+Other runtimes (Claude Agent SDK, LangGraph, CrewAI, Hermes) are planned but not yet implemented. File an issue if you need one.
 
-## Maintenance / upstream
+## Themes we're investing in next
 
-- **Cowork plugin perf.** Today `betterclaw hook <event>` cold-starts Node per invocation (~100-150ms). If users hit this in practice, a socket-resident enforcement path on the daemon brings it down to ~7ms (verified in the spike).
+- **Compile prompt iteration.** Real-world paragraphs occasionally produce graphs with wrong tool names, missing approval gates, or odd shapes. Each issue informs a small prompt fix. Telemetry from real installs is what tells us which patterns matter.
+- **Approval routing.** Multi-user role + threshold rules so the right person sees the right approval. Today only the active user can approve.
+- **Dry-run mode.** Run a graph against historical data without external side effects. Useful for reviewing a new agent before it touches production.
+- **Better deviation messages.** When the agent calls a tool outside the graph, today's error is mechanical. Make it agent-actionable so the agent recovers cleanly.
+- **More host-runtime adapters.** Claude Agent SDK is the most-requested. LangGraph, CrewAI, Hermes after.
+
+## Exploratory
+
+- **Cloud-tier audit log.** Hash-chained, multi-user, exportable for compliance. Exists in BetterClaw's longer-term thinking; gated on real signal that customers want to pay for it.
+- **Pattern library.** Public catalog of workflow paragraphs (and reference graphs that compile from them). Today's `betterclaw publish --to gist` already shares the paragraph + graph + meta as a unit. A real catalog makes patterns discoverable. Whether it ships depends on whether enough patterns get shared via gist first to suggest demand. Note: in v0.3, paragraphs travel better than graphs — graphs reference concrete host-tool names, paragraphs recompile against the recipient's environment, so the unit of sharing is the pattern, not the graph.
+- **UX polish.** Paragraph-edit graph diff, what-if simulation, natural-language audit query.
+- **Integrations with closed SaaS AI products** (Ada / Intercom Fin / Zendesk AI / Cresta / etc.). Their runtimes don't host plugins, so BetterClaw's v0.3 model doesn't apply directly. We're exploring audit-only ingestion via webhooks as a starting point. File an issue if your team is locked into a SaaS product and wants to talk through what would be useful.
+
+## Maintenance
+
+- **Cowork plugin perf.** Hook dispatch is ~100-150ms today (Node cold start). Socket-resident path drops it to ~7ms when latency starts mattering.
+- **Connector hint list.** `COMMON_COWORK_CONNECTORS` in the CLI tracks Anthropic-shipped connectors; needs updates as that list evolves.
 
 ## Want to influence the order?
 

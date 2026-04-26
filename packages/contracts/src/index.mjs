@@ -1,4 +1,4 @@
-// @betterclaw/contracts — shared type surface between plugin, CLI, and (later) cloud.
+// @betterclaw-ai/contracts — shared type surface between plugin, CLI, and (later) cloud.
 //
 // V1 scaffold: this package is a placeholder. Types get filled in when
 // (a) the paid cloud backend work starts (needs AuditEvent, ApprovalRequest,
@@ -10,7 +10,7 @@
 // defined by the MCP spec itself — no BetterClaw-specific contracts yet.
 //
 // Types will be defined as JSDoc @typedef annotations so consumers can import
-// them via `@typedef {import('@betterclaw/contracts').AuditEvent} AuditEvent`
+// them via `@typedef {import('@betterclaw-ai/contracts').AuditEvent} AuditEvent`
 // without a TypeScript build step. If type-safety becomes a bottleneck, this
 // package can be promoted to real TypeScript.
 

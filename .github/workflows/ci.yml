@@ -46,7 +46,7 @@ jobs:
         run: ./packages/cli/bin/betterclaw doctor || true
 
       - name: Dry-run publish — CLI
-        run: pnpm --filter "@betterclaw/cli" publish --dry-run --no-git-checks
+        run: pnpm --filter "@betterclaw-ai/cli" publish --dry-run --no-git-checks
 
       - name: Dry-run publish — plugin
         run: pnpm --filter "betterclaw" publish --dry-run --no-git-checks

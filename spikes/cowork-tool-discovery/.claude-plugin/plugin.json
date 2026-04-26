@@ -1,0 +1,5 @@
+{
+  "name": "betterclaw-cowork-tool-discovery-spike",
+  "version": "0.0.1",
+  "description": "Phase 0 spike for v0.3 refactor: empirically determine tool-name format and enumeration surface for Anthropic-connector tool calls under Cowork plugin runtime."
+}

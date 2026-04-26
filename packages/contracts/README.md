@@ -1,4 +1,4 @@
-# @betterclaw/contracts
+# @betterclaw-ai/contracts
 
 **Status:** V1 scaffold. Placeholder until cloud backend work starts.
 
@@ -8,7 +8,7 @@ Shared type definitions and wire protocol schemas between BetterClaw's plugin, C
 
 ```javascript
 // JSDoc @typedef annotations exported from src/index.mjs
-// Consumers import types via @typedef { import('@betterclaw/contracts').AuditEvent } AuditEvent
+// Consumers import types via @typedef { import('@betterclaw-ai/contracts').AuditEvent } AuditEvent
 
 /** @typedef AuditEvent — one row in the append-only hash-chained audit log */
 /** @typedef ApprovalRequest — the shape the plugin sends + the cloud stores */
@@ -21,7 +21,7 @@ Shared type definitions and wire protocol schemas between BetterClaw's plugin, C
 
 For V1's OpenClaw-only distribution, the only shared wire contract is the MCP JSON-RPC envelope (already defined by the MCP spec). BetterClaw-specific types don't exist yet because neither the cloud backend nor the Cowork plugin has been built.
 
-When cloud work starts (gated on Week 3 validation per the CEO plan), types land here first and consumers (plugin, CLI, cloud, future plugin-cowork) import them. That keeps the OSS/paid boundary clean: the `@betterclaw/contracts` package stays public (publishable to npm) while `@betterclaw/cloud` stays private.
+When cloud work starts (gated on Week 3 validation per the CEO plan), types land here first and consumers (plugin, CLI, cloud, future plugin-cowork) import them. That keeps the OSS/paid boundary clean: the `@betterclaw-ai/contracts` package stays public (publishable to npm) while `@betterclaw-ai/cloud` stays private.
 
 ## Why JSDoc @typedef instead of TypeScript
 

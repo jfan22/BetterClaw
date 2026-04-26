@@ -1,166 +1,154 @@
 # BetterClaw QUICKSTART
 
-Zero-to-first-agent in about 5 minutes (plus 2 minutes of Google Cloud Console for the email vertical).
+Zero-to-first-agent in about 5 minutes. Three install paths depending on which agent runtime you use:
 
-## 0. Prerequisites
+| Path | Best for | Setup |
+|---|---|---|
+| **A. Cowork (Claude Desktop)** | Non-developers, fastest path | ~5 min, no GCP setup |
+| **B. OpenClaw (CLI)** | Developers running their own MCP servers | ~10 min |
+| **C. Demo (no real tools)** | Trying BetterClaw out before committing | ~3 min |
 
-- **Node 22+** (use `nvm install 22 && nvm use 22 && nvm alias default 22`)
-- **OpenClaw** installed globally: `npm install -g openclaw@latest`
-- **Claude CLI** installed + authenticated — `openclaw doctor` will tell you
+## 0. Prerequisites (all paths)
 
-Run `openclaw doctor` to verify.
+- **Node 22+** (`nvm install 22 && nvm use 22 && nvm alias default 22`)
+- **pnpm** (`npm install -g pnpm`, or see https://pnpm.io/installation)
+- **Claude CLI** authenticated (`claude --version` should work)
 
-## 1. Register Claude CLI with OpenClaw (one-time)
-
-OpenClaw needs an auth profile that points at the locally-authed Claude CLI. This command is interactive:
-
-```bash
-openclaw models auth login --provider anthropic --method cli --set-default
-```
-
-Accept the defaults.
-
-## 2. Install BetterClaw
+## 1. Install BetterClaw (all paths)
 
 ```bash
 git clone https://github.com/jfan22/BetterClaw.git ~/Prj/BetterClaw
 cd ~/Prj/BetterClaw
-pnpm install                                    # pnpm workspaces — installs deps for every package
+pnpm install
 
 # Symlink the CLI onto your PATH
 ln -sf $PWD/packages/cli/bin/betterclaw ~/.local/bin/betterclaw
 
-# Install the OpenClaw plugin (linked so edits reflect immediately)
-openclaw plugins install $PWD/packages/plugin-openclaw --link
-
-# Tell OpenClaw the plugin is trusted
-openclaw config set plugins.allow '["betterclaw"]'
-
-# Start the Gmail MCP proxy daemon
-betterclaw start
+betterclaw --version    # should print "betterclaw 0.3.0"
 ```
 
-If you don't have pnpm, `npm install -g pnpm` first, or see https://pnpm.io/installation.
+First `betterclaw` invocation prints a one-line notice about anonymous usage telemetry written to `~/.betterclaw/telemetry.jsonl` — no PII, local-only, no remote collector. Opt out any time: `betterclaw telemetry off`.
 
-The daemon owns the Gmail MCP subprocess on behalf of both the plugin and the CLI, listening on `~/.betterclaw/mcp.sock`. One reason it exists: the plugin itself no longer spawns subprocesses, so `openclaw plugins install` no longer needs the `--dangerously-force-unsafe-install` flag it used to require. Side benefit: Gmail OAuth state persists across agent turns.
+---
 
-- `betterclaw start` — start detached. Idempotent.
-- `betterclaw stop` — stop.
-- `betterclaw status` — check daemon state.
-- `betterclaw mcp-daemon` — foreground mode for debugging (stderr visible).
-- `betterclaw run "<task>"` — auto-starts daemon + runs `openclaw agent --local -m "<task>"`.
+## Path A — Cowork (recommended for non-developers)
 
-First `betterclaw start` prints a one-line notice about anonymous usage telemetry written to `~/.betterclaw/telemetry.jsonl` — no PII, local-only, no remote collector. Opt out any time: `betterclaw telemetry off`. See [`betterclaw telemetry --help`](./packages/cli/README.md) for the full surface (`dump`, `export`, `dismiss-cta`).
+### A.1. Install Claude Desktop and enable the connectors you want
 
-Verify: `betterclaw doctor` should report everything GREEN except the Gmail-specific rows if you haven't done step 4.
+Download Claude Desktop, sign in, and in claude.ai under Settings → Connectors, enable any of:
 
-## 3. (Optional) Also install the Cowork plugin
+- **Gmail**
+- **Google Calendar**
+- **Google Drive**
+- **Apollo.io**
 
-If you'd rather run BetterClaw inside Anthropic's Cowork (Claude Desktop) instead of — or alongside — `openclaw agent --local`, install the sibling plugin:
+Anthropic ships verified OAuth — click through the standard Google consent screen. **No GCP project, no credentials.json.** Zero developer setup.
+
+### A.2. Install the BetterClaw Cowork plugin
 
 ```bash
-# Load the plugin into Claude Desktop (research-preview flow)
 claude --plugin-dir $PWD/packages/plugin-cowork
 ```
 
-Both plugins read the same active graph and share the same approval queue, so `betterclaw pending` / `approve <id>` / `deny <id>` work regardless of which plugin generated the request. Pick whichever runtime matches your workflow — CLI-agent folks tend toward OpenClaw, desktop-agent folks toward Cowork.
+This loads the BetterClaw Cowork plugin into Claude Desktop. The plugin enforces over the connectors you enabled in step A.1.
 
-See [`packages/plugin-cowork/README.md`](./packages/plugin-cowork/README.md) for the architecture diagram and troubleshooting. ADR 0001 ([docs/adrs/](./docs/adrs/)) documents the Cowork plugin SDK verification.
-
-## 4. (Optional) Gmail vertical setup
-
-Only needed if you want the email vertical. Skip this section if you only care about shopping / sales / travel.
-
-### 4a. Throwaway Gmail + Google Cloud project (~2 min)
-
-1. Create a throwaway Gmail account (or use an existing one you don't mind the agent drafting in).
-2. https://console.cloud.google.com/ → new project "BetterClaw Dev"
-3. **APIs & Services → Library** → search "Gmail API" → **Enable**
-4. **APIs & Services → OAuth consent screen** → walk through the wizard. Set user type to **External**. Add your throwaway Gmail as a test user.
-5. **APIs & Services → Credentials → Create Credentials → OAuth client ID** → application type **Desktop app** → **Create** → **Download JSON**.
-6. Move the downloaded file to `~/.gmail-mcp/gcp-oauth.keys.json`:
-   ```bash
-   mkdir -p ~/.gmail-mcp
-   mv ~/Downloads/client_secret_*.json ~/.gmail-mcp/gcp-oauth.keys.json
-   ```
-
-### 4b. Run the auth flow
+### A.3. Compile and run a workflow
 
 ```bash
-npm install -g @gongrzhe/server-gmail-autoauth-mcp
-npx @gongrzhe/server-gmail-autoauth-mcp auth
+betterclaw "schedule a meeting next Tuesday and email the agenda to the team"
 ```
 
-Browser opens, click through consent (you'll see "Google hasn't verified this app" — expected; click Advanced → proceed). Credentials land at `~/.gmail-mcp/credentials.json`.
+BetterClaw compiles your paragraph into a graph that references concrete tool names like `mcp__claude_ai_Google_Calendar__create_event` and `mcp__claude_ai_Gmail__send_email`. A Mermaid preview opens in your browser. Answer `y`. Then in Claude Desktop, ask the agent to do that workflow — the plugin enforces the graph.
 
-## 5. Pick a preset (fastest) or compile your own
+---
 
-### Preset route — zero setup (shopping/sales/travel) or Gmail setup (email)
+## Path B — OpenClaw (developer route)
+
+### B.1. Install OpenClaw + register Claude
 
 ```bash
-# See what's bundled
-betterclaw presets
-
-# Install one — copies into your library AND loads as the active graph
-betterclaw presets shopping-compare     # no setup, works immediately
-betterclaw presets sales-prospect        # no setup, stub leads
-betterclaw presets travel-cheapest-flight   # no setup, stub flights
-betterclaw presets email-triage          # needs step 4 above
+npm install -g openclaw@latest
+openclaw models auth login --provider anthropic --method cli --set-default
+openclaw doctor    # verify
 ```
 
-### Compile route — your own paragraph
+### B.2. Install the BetterClaw plugin
 
 ```bash
-# Email triage with approval gate
-betterclaw "triage my inbox: flag investor emails, draft replies for customer questions, let me approve each draft"
-
-# Or shopping — no setup needed
-betterclaw "find me a good wireless mouse under \$50 — compare the top two"
-
-# Or travel
-betterclaw "book a trip from SFO to JFK — search flights under \$400, then compare the two cheapest"
-
-# Or sales (stub leads)
-betterclaw "find 3 leads in logistics with signals of recent growth, draft personalized outreach, let me approve each draft"
+openclaw plugins install $PWD/packages/plugin-openclaw --link
+openclaw config set plugins.allow '["betterclaw"]'
 ```
 
-Compiling opens a Mermaid diagram of the compiled graph in your browser. Review, answer `y` at the terminal prompt. Presets skip the review step because the graph is pre-baked.
+### B.3. Bring your own tools
 
-### Run the agent
+OpenClaw users provide tools via MCP servers. Install the ones you want via `openclaw mcp` — filesystem, slack, gh, custom. BetterClaw enforces over whatever tools your MCP servers expose.
+
+### B.4. Compile and run
 
 ```bash
-betterclaw run "<describe the task>"
+betterclaw "<your paragraph>"
+betterclaw run "<the same paragraph>"
 ```
 
-This auto-starts the daemon if needed and runs `openclaw agent --local --agent main -m "<task>"`. You can also invoke `openclaw` directly if you prefer — just make sure `betterclaw start` has run first.
+### B.5. (Optional) Gmail without Cowork
 
-Each preset's `meta.json` has an `example_agent_message` you can paste verbatim — `betterclaw presets <name>` prints it for you.
+If you want Gmail under OpenClaw and don't want to use Cowork:
 
-You'll see `[ALLOW]` and `[DEVIATION]` lines on stderr. If the graph includes `requires_approval`, the agent pauses — run `betterclaw pending` then `betterclaw approve <id>` to resume.
+```bash
+betterclaw connect gmail
+```
 
-## 6. Live view (optional but cool)
+This walks you through enabling BetterClaw's bundled Gmail integration, which **does** require a GCP project + OAuth setup. Most users should prefer Cowork (Path A) — that's why this path is opt-in.
+
+---
+
+## Path C — Demo (no real tools, no setup)
+
+For trying BetterClaw out before committing to either Cowork or OpenClaw:
+
+```bash
+# Tutorial demo — uses dummyjson.com fake catalog, zero auth
+BETTERCLAW_DEMO=1 betterclaw "find a wireless mouse under $50, compare the top two"
+```
+
+Demo tools are clearly labeled `[DEMO]` and only registered when `BETTERCLAW_DEMO=1` is set. They don't ship in the production code path.
+
+---
+
+## Common steps
+
+### Live view (any path)
 
 In one terminal:
-
 ```bash
 betterclaw view --watch
-# → opens http://127.0.0.1:<port>/ in your browser
+# → opens http://127.0.0.1:<port>/
 ```
 
 In another terminal:
-
 ```bash
 betterclaw run "<your task>"
 ```
 
-The browser re-renders the Mermaid graph live as the agent steps through it: visited nodes go green, traversed edges bold, attempted deviations appear as dashed red ghosts off the node where the attempt fired. Approval gates surface as banners with Approve/Deny buttons.
+The browser re-renders the Mermaid graph live as the agent steps through it: visited nodes go green, traversed edges bold, attempted deviations appear as dashed red ghosts. Approval gates surface as banners with Approve/Deny buttons.
 
-## 7. Sharing
+### Approvals
+
+If the graph has `requires_approval`, the agent pauses on those tools:
+
+```bash
+betterclaw pending             # list pending approvals
+betterclaw show <id>           # inspect one (params pretty-printed)
+betterclaw approve <id>        # dispatch to the real tool
+betterclaw deny <id>           # cancel
+```
+
+### Sharing
 
 ```bash
 betterclaw save customer-triage              # snapshot to ~/.betterclaw/library/
 betterclaw list                              # see all saved graphs
-betterclaw publish customer-triage --to gist # publishes via gh gist create
+betterclaw publish customer-triage --to gist # via `gh gist create`
 
 # Another developer, later:
 betterclaw fork <gist-url> customer-triage
@@ -169,16 +157,19 @@ betterclaw load customer-triage
 
 ## Troubleshooting
 
-Run `betterclaw doctor` first — it tells you exactly what's broken.
+`betterclaw doctor` first — it tells you exactly what's broken.
 
-**"plugins.allow is empty"** — run `openclaw config set plugins.allow '["betterclaw"]'`.
+**"plugins.allow is empty"** (OpenClaw) — `openclaw config set plugins.allow '["betterclaw"]'`.
 
-**"No API key found for provider 'openai'"** — Claude isn't the default model. Run `openclaw models auth login --provider anthropic --method cli --set-default`.
+**"No API key found"** — Claude isn't the default model. `openclaw models auth login --provider anthropic --method cli --set-default`.
 
-**"BetterClaw daemon not running"** or **"daemon not reachable"** — run `betterclaw start`. If `betterclaw status` shows stale PID, run `betterclaw stop && betterclaw start`. Daemon logs go to `~/.betterclaw/mcp.log`; for live output, run `betterclaw mcp-daemon` in the foreground.
+**Agent says "I don't have an X tool"** — the host environment doesn't expose that tool.
+- Cowork: enable the relevant connector in Claude.ai.
+- OpenClaw: install the relevant MCP server (`openclaw mcp install <name>`).
+- Gmail-specifically (OpenClaw without Cowork): `betterclaw connect gmail`.
 
-**Agent says "I don't have a Gmail tool"** — either (a) you're on a non-email vertical but asked for email; (b) the plugin didn't load — check `openclaw plugins inspect betterclaw`; (c) the daemon is down — `betterclaw status`.
+**"daemon not reachable"** or **"daemon not running"** — only relevant if you ran `betterclaw connect gmail`. `betterclaw start` to start it; `betterclaw status` to check.
 
-**`openclaw agent --local` just hangs** — the plugin may be waiting for approval. Check `betterclaw pending`. If no pending and still hanging, check for `[APPROVAL]` in the agent's stderr.
+**`openclaw agent --local` hangs** — likely waiting for approval. `betterclaw pending` to check; if there's a pending approval, `betterclaw approve <id>` resumes.
 
-**"tail: ... | tail -N"** — don't pipe agent output through tail while iterating. `tail` buffers until the agent exits. Pipe through nothing.
+**Compile produces an `unrecognized_action` node** — your paragraph references an action that doesn't map to any plausible host-provided tool. Either rewrite the paragraph, or enable the relevant connector / install the relevant MCP server, then recompile.

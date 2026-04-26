@@ -1,7 +1,7 @@
 {
   "name": "betterclaw-cowork",
   "description": "BetterClaw for Anthropic Cowork — declarative workflow enforcement + approval gates + audit trail for any Cowork agent. Install via the Claude Desktop plugin manager.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "BetterClaw contributors"
   },

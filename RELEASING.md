@@ -1,11 +1,11 @@
 # Releasing BetterClaw
 
-How to publish a new version of the CLI (`@betterclaw/cli`) and the OpenClaw plugin (`betterclaw`) to npm.
+How to publish a new version of the CLI (`@betterclaw-ai/cli`) and the OpenClaw plugin (`@betterclaw-ai/plugin-openclaw`) to npm.
 
 ## Prerequisites (one-time)
 
 1. **npm account.** `npm adduser`, then `npm whoami` should print your handle.
-2. **Access to publish.** For `@betterclaw/*` scoped packages, your npm account needs to own or be on the org. `npm org ls betterclaw` confirms membership. For the unscoped `betterclaw` package (the plugin), you need to own it — `npm owner ls betterclaw`.
+2. **Access to publish.** For `@betterclaw-ai/*` scoped packages, your npm account needs to own or be on the `betterclaw-ai` org. `npm org ls betterclaw-ai` confirms membership.
 3. **2FA for publish** enabled on your npm account. `npm profile set auth-and-writes`. All publishes require a one-time password.
 4. **Clean git state.** Don't ship with uncommitted work. `git status` should be empty.
 
@@ -17,11 +17,11 @@ Semver, same version across all publishable packages for V1 (cli + plugin-opencl
 
 ```bash
 # From repo root. Bump all packages to the new version.
-pnpm --filter "@betterclaw/cli" --filter "betterclaw" exec \
-  npm version 0.2.1 --no-git-tag-version
+pnpm --filter "@betterclaw-ai/cli" --filter "@betterclaw-ai/plugin-openclaw" exec \
+  npm version 0.3.0 --no-git-tag-version
 
 # Update the root package.json to match for consistency.
-npm version 0.2.1 --no-git-tag-version --prefix .
+npm version 0.3.0 --no-git-tag-version --prefix .
 
 # Update BETTERCLAW_VERSION constant in packages/cli/bin/betterclaw
 # (grep for BETTERCLAW_VERSION and bump the string)
@@ -49,8 +49,8 @@ node --check packages/cli/bin/betterclaw
 for f in packages/plugin-openclaw/*.mjs; do node --check "$f" || exit 1; done
 
 # Dry-run publish for each publishable package
-pnpm --filter "@betterclaw/cli" publish --dry-run
-pnpm --filter "betterclaw" publish --dry-run
+pnpm --filter "@betterclaw-ai/cli" publish --dry-run
+pnpm --filter "@betterclaw-ai/plugin-openclaw" publish --dry-run
 
 # The dry-run lists every file that will land in the tarball.
 # Verify: no source outside the `files` manifest, LICENSE + NOTICE present,
@@ -61,10 +61,10 @@ pnpm --filter "betterclaw" publish --dry-run
 
 ```bash
 git add -A
-git commit -m "chore(release): v0.2.1"
-git tag -s v0.2.1 -m "v0.2.1 release"   # signed tag; drop -s if no GPG setup
+git commit -m "chore(release): v0.3.0"
+git tag -s v0.3.0 -m "v0.3.0 release"   # signed tag; drop -s if no GPG setup
 git push origin main
-git push origin v0.2.1
+git push origin v0.3.0
 ```
 
 ### 5. Publish
@@ -72,13 +72,13 @@ git push origin v0.2.1
 Publish the CLI first (plugin install docs reference it by name):
 
 ```bash
-pnpm --filter "@betterclaw/cli" publish --otp=XXXXXX
+pnpm --filter "@betterclaw-ai/cli" publish --otp=XXXXXX
 ```
 
 Then the plugin:
 
 ```bash
-pnpm --filter "betterclaw" publish --otp=XXXXXX
+pnpm --filter "@betterclaw-ai/plugin-openclaw" publish --otp=XXXXXX
 ```
 
 `--otp` is your 2FA code. If you get `E402 Payment Required`, you hit npm's free-tier scoped-package limit; either upgrade the org to a paid plan or switch scope.
@@ -90,12 +90,12 @@ pnpm --filter "betterclaw" publish --otp=XXXXXX
 cd /tmp
 mkdir release-test && cd release-test
 npm init -y
-npm install betterclaw@0.2.1 @betterclaw/cli@0.2.1
+npm install @betterclaw-ai/plugin-openclaw@0.3.0 @betterclaw-ai/cli@0.3.0
 
-# Plugin files land at node_modules/betterclaw/
-ls node_modules/betterclaw/*.mjs
-cat node_modules/betterclaw/LICENSE | head -3   # verify LICENSE + NOTICE made it in
-cat node_modules/betterclaw/NOTICE | head -3
+# Plugin files land at node_modules/@betterclaw-ai/plugin-openclaw/
+ls node_modules/@betterclaw-ai/plugin-openclaw/*.mjs
+cat node_modules/@betterclaw-ai/plugin-openclaw/LICENSE | head -3   # verify LICENSE + NOTICE made it in
+cat node_modules/@betterclaw-ai/plugin-openclaw/NOTICE | head -3
 
 # CLI binary is executable
 ./node_modules/.bin/betterclaw --version
@@ -118,10 +118,10 @@ If a bad release ships:
 ```bash
 # Deprecate, don't unpublish. Unpublishing breaks downstream users who already
 # installed the bad version; deprecation just adds a warning on future installs.
-npm deprecate betterclaw@0.2.1 "Bad release; install 0.2.0 or wait for 0.2.2"
-npm deprecate @betterclaw/cli@0.2.1 "Bad release; install 0.2.0 or wait for 0.2.2"
+npm deprecate @betterclaw-ai/plugin-openclaw@0.3.0 "Bad release; wait for 0.3.1"
+npm deprecate @betterclaw-ai/cli@0.3.0 "Bad release; wait for 0.3.1"
 
-# Fix the bug, bump to 0.2.2, publish again.
+# Fix the bug, bump to 0.3.1, publish again.
 ```
 
 npm's [unpublish policy](https://docs.npmjs.com/policies/unpublish) is strict: you can unpublish within 72 hours if zero downloads, otherwise you can only deprecate. Plan accordingly.

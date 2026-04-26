@@ -1,0 +1,88 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__claude_ai_Gmail__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-probe.sh pre-gmail"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__claude_ai_Google_Calendar__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-probe.sh pre-calendar"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__claude_ai_Apollo_io__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-probe.sh pre-apollo"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__claude_ai_Google_Drive__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-probe.sh pre-drive"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__claude_ai_.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-probe.sh pre-anthropic-connector-any"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-probe.sh pre-mcp-any"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-probe.sh pre-catchall"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-probe.sh user-prompt-submit"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-probe.sh post-tool-use"
+          }
+        ]
+      }
+    ]
+  }
+}

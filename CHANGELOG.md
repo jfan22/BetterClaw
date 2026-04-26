@@ -4,6 +4,49 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.0] — 2026-04-26
+
+**Theme:** BetterClaw refactors from a vertical bundler into a pure workflow-enforcement layer. The plugin no longer owns or registers tools by default; tools come from the host environment (Anthropic Cowork connectors or user-installed MCP servers). This removes the GCP-project setup wall from the non-tech-user golden path: Cowork users get Gmail / Calendar / Drive / Apollo with zero setup.
+
+This is the **first npm release** of BetterClaw. v0.2.x stayed as git tags only; per [ADR 0002](./docs/adrs/0002-enforcement-layer-not-vertical-bundler.md), we skipped publishing v0.2.x to avoid baking the broken-vertical first impression into npm search results.
+
+### Architecture (per ADR 0002, accepted after Phase 0 spike)
+
+- **Plugin owns no tools by default.** `index.mjs` registers only `before_tool_call` and `before_prompt_build` hooks. Production code paths register zero tools.
+- **Enforced tool-name set comes from the active graph itself**, not from a hardcoded vertical registry. Whatever tool names the graph references, the plugin enforces.
+- **CLI compile is host-tool-aware.** Prompt instructs Claude to emit graphs with concrete tool names (`mcp__claude_ai_Gmail__send_email`, `mcp__filesystem__read_file`, etc.) following the conventions used by Anthropic connectors and user MCP servers.
+- **Gmail fallback is opt-in.** OpenClaw users without Cowork can run `betterclaw connect gmail` to enable BetterClaw's bundled Gmail integration. The MCP daemon is dormant otherwise.
+
+### Added
+
+- `packages/plugin-openclaw/enforcement.mjs` — pure decision module taking `(graph, state, toolCall)` and returning allow / block / approval-queued. Side-effect collaborators (runLogger, telemetry, stderr) injected for testability.
+- `packages/plugin-openclaw/history.mjs` — cross-turn approval-history surfacing (extracted from index.mjs).
+- `betterclaw connect gmail` / `betterclaw disconnect gmail` — opt-in enable/disable for the bundled Gmail integration. Writes `~/.betterclaw/gmail-fallback-enabled` marker.
+- `BETTERCLAW_DEMO=1` env var — registers `demo-shopping` tutorial tools (renamed from `vertical-shopping`). Tutorial only; not on the production code path.
+- `detectHost()` inline function in CLI — classifies runtime as cowork / openclaw / manual. Used to shape error messages.
+- `docs/adrs/0002-enforcement-layer-not-vertical-bundler.md` — architecture decision record.
+- Phase 0 spike findings recorded in `spikes/cowork-tool-discovery/results.md`. Detailed phased refactor plan kept private (eng-plans archive).
+- `spikes/cowork-tool-discovery/` — Phase 0 spike that verified the deferred-tool model and stretch-passed the architecture gate.
+
+### Changed (breaking)
+
+- **Plugin no longer registers tools by default.** Graphs that reference `gmail_search`, `shop_search`, `sales_find_leads`, etc. (the v0.2 vertical names) need to be recompiled. The new compile produces graphs with concrete host-tool names.
+- **CLI compile prompt rewritten.** `VERTICAL_GUIDANCE` table dropped. `detectVertical` keyword-matching dropped. New prompt guides Claude to use the `mcp__<server>__<action>` convention.
+- **`validateGraph` no longer enforces a hardcoded tool whitelist.** Compile-time validation only checks graph shape; runtime catches unknown tools.
+- **Gmail MCP daemon no longer auto-starts on every `betterclaw run`.** Requires the marker file written by `betterclaw connect gmail`. `betterclaw start` refuses with a clear pointer if the marker is absent.
+- **`graph.vertical` field is no longer read.** Existing graphs with the field still load; the field is just ignored.
+
+### Removed
+
+- `packages/plugin-openclaw/vertical-sales.mjs` (stub that never shipped a real implementation).
+- `packages/plugin-openclaw/vertical-travel.mjs` (stub that never shipped a real implementation).
+- `VERTICAL_GUIDANCE` table in CLI (~50 LOC of hardcoded tool names per vertical).
+- `detectVertical()` function in CLI (~40 LOC of keyword matching).
+
+### Deprecated
+
+- `vertical-email.mjs` is preserved in the plugin package but loaded only when `~/.betterclaw/gmail-fallback-enabled` exists. Future versions may remove it entirely if Cowork's Gmail connector is sufficient and OpenClaw users adopt their own Gmail MCPs.
+
 ## [0.2.1] — 2026-04-25
 
 **Theme:** drop the v0.2.0 workarounds now that upstream OpenClaw caught up. Plugin shrinks ~50 LOC, gets cleaner native hook semantics.
@@ -28,7 +71,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterC
 Upgrading from v0.2.0:
 
 1. `npm install -g openclaw@latest` (must be ≥ 2026.4.24)
-2. `npm install -g @betterclaw/cli@0.2.1` (CLI version-bumped for parity, no functional changes)
+2. `npm install -g @betterclaw-ai/cli@0.2.1` (CLI version-bumped for parity, no functional changes)
 3. Reinstall the plugin so the new compat is read: `openclaw plugins install $PWD/packages/plugin-openclaw --link`
 4. Restart the daemon: `betterclaw stop && betterclaw start`
 5. Run any agent — the plugin's first boot strips the legacy MEMORY.md block silently.
@@ -49,7 +92,7 @@ Behaviorally identical to v0.2.0. Hooks fire faster (no manual wrap layer), MEMO
 - **Apache-2.0 LICENSE + NOTICE.** BetterClaw is open source under Apache 2.0 (chose this over MIT for the explicit patent grant, relevant to the enterprise-compliance wedge). See LICENSE for full text, NOTICE for third-party attribution.
 - **Cowork plugin (`packages/plugin-cowork/`).** Real implementation of BetterClaw as an Anthropic Cowork plugin. Manifest at `.claude-plugin/plugin.json`, three hook declarations in `hooks/hooks.json` (PreToolUse, UserPromptSubmit, PostToolUse), and a 1-line shell shim that execs `betterclaw hook <event>`. Same enforcement + approval queue as the OpenClaw plugin path; state is shared (active graph, approval queue) so `betterclaw pending` / `approve` / `deny` work identically regardless of which plugin generated the request.
 - **`betterclaw hook <event>` subcommand.** Internal entry point invoked by the Cowork plugin shim. Reads JSON from stdin, runs workflow enforcement, writes response JSON to stdout. Vendors `loadGraph`/`enforce`/`freshState` inline so the CLI is self-contained for npm publish. Per-session current-node tracking in `~/.betterclaw/cowork-sessions.json` (pruned after 1h idle). ADR 0001 updated from Proposed to Accepted based on empirical verification.
-- **npm publish readiness.** Both `@betterclaw/cli` and `betterclaw` (plugin) have `publishConfig`, `repository`, `keywords`, LICENSE + NOTICE in their tarballs. `npm pack --dry-run` verified: CLI = 5 files / 37kB, plugin = 13 files / 22kB. See [RELEASING.md](./RELEASING.md) for the publish playbook, [scripts/sync-license.sh](./scripts/sync-license.sh) to keep LICENSE/NOTICE in sync across packages, and [.github/workflows/ci.yml](./.github/workflows/ci.yml) for the CI checks (syntax, publish dry-run, PII audit, LICENSE sync).
+- **npm publish readiness.** Both `@betterclaw-ai/cli` and `betterclaw` (plugin) have `publishConfig`, `repository`, `keywords`, LICENSE + NOTICE in their tarballs. `npm pack --dry-run` verified: CLI = 5 files / 37kB, plugin = 13 files / 22kB. See [RELEASING.md](./RELEASING.md) for the publish playbook, [scripts/sync-license.sh](./scripts/sync-license.sh) to keep LICENSE/NOTICE in sync across packages, and [.github/workflows/ci.yml](./.github/workflows/ci.yml) for the CI checks (syntax, publish dry-run, PII audit, LICENSE sync).
 - **DESIGN.md** — design system spec with dual-aesthetic surface map (editorial for CLI/PDF cover, modern tech for web UI, native for Slack).
 - **ROADMAP.md** — public-facing summary of V2 / V3 work and upstream maintenance tracking.
 - **docs/adrs/0001-cowork-sdk-feasibility.md** — ADR accepting the Cowork plugin distribution path. Empirical verification via `spikes/cowork-hook-verify/`.

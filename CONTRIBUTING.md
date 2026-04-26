@@ -1,129 +1,113 @@
 # Contributing to BetterClaw
 
-## Adding a new vertical
+Welcome. Here's how the v0.3 architecture works and where contributions help most.
 
-A "vertical" is a group of tools that covers one use-case domain — email, shopping, sales, travel. Each vertical is one file: `packages/plugin-openclaw/vertical-<name>.mjs`.
+## What BetterClaw is (and isn't) in v0.3
 
-The architecture guarantees:
-- Tools for exactly one vertical are loaded per agent turn (based on the active graph's `vertical` field).
-- The compiler knows which tools exist and which rules apply for the vertical, so LLM-generated graphs stay valid.
-- Enforcement, approvals, replay, live view, fork/diff/publish all work vertical-agnostically.
+Per [ADR 0002](./docs/adrs/0002-enforcement-layer-not-vertical-bundler.md), BetterClaw is a **workflow-enforcement layer** — not a tool bundler. Tools come from the host environment (Anthropic Cowork connectors, OpenClaw MCP servers). The plugin gates calls to those tools against a declared graph.
 
-### The 3-step recipe
+This means: **don't add new "verticals" to the plugin.** That model existed in v0.2 and was retired. If you find yourself wanting to write a Gmail or Slack or Calendar tool inside BetterClaw, the answer is "use the host's connector / MCP server instead."
 
-**Step 1: Create `packages/plugin-openclaw/vertical-<name>.mjs`.**
+## Where contributions are welcome
 
-```js
-import { Type } from "@sinclair/typebox";
+### 1. Better compile prompts (highest leverage)
 
-export const vertical = {
-  id: "<name>",
-  description: "One-line human description.",
-  guidance_for_compiler: `
-AVAILABLE TOOLS — pick only from this list:
-- <tool_a>: what it does
-- <tool_b>: what it does
+`packages/cli/bin/betterclaw` → `buildCompilePrompt()` produces the graphs. Real-world paragraphs occasionally trip up the compile (wrong tool name picked, missing approval gate, malformed graph). Each fix sharpens the V1 product for everyone.
 
-RULES:
-1. The entry node's allowed_tools MUST include "<entry_tool>".
-2. ...additional sequencing constraints...
-`.trim(),
-  tools: [
-    {
-      name: "<tool_a>",
-      description: "Agent-facing description. Will appear in the LLM's tool list.",
-      parameters: Type.Object({
-        query: Type.String(),
-        maxResults: Type.Optional(Type.Number({ default: 5 })),
-      }),
-      async execute(_id, params) {
-        return {
-          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        };
-      },
-    },
-    // ...more tools
-  ],
-};
+If you observe a paragraph that compiles to a wrong-shaped graph, file an issue with:
+- The exact paragraph
+- The `active-graph.json` it produced
+- What you expected
+
+The fix is usually a 5-15 line addition to the prompt rules.
+
+### 2. New workflow presets
+
+`presets/` ships starter workflows. Adding a good one helps users discover the model.
+
+```
+presets/<your-preset-name>/
+  graph.json       # the compiled workflow (concrete tool names)
+  paragraph.md     # the English description it was compiled from
+  meta.json        # {name, description, source: "preset", example_agent_message}
 ```
 
-**Step 2: Register it in `packages/plugin-openclaw/index.mjs`.**
+Use concrete tool names (`mcp__claude_ai_*` for Cowork or `mcp__<server>__<action>` for user MCPs). Don't reference v0.2 vertical-style names like `gmail_search`.
 
-Add the import and the VERTICALS entry:
+### 3. Common-connector hints
 
-```js
-import { vertical as myVertical } from "./vertical-<name>.mjs";
+The `COMMON_COWORK_CONNECTORS` list in `packages/cli/bin/betterclaw` hints to the compile prompt about what's available in Cowork. As Anthropic adds connectors (or as the action names change), this list needs to track. Adding a new connector entry is one line.
 
-const VERTICALS = new Map([
-  // ...existing...
-  [myVertical.id, myVertical],
-]);
-```
+### 4. Enforcement engine improvements
 
-**Step 3: Teach the compiler about it in `packages/cli/bin/betterclaw`.**
+`packages/plugin-openclaw/enforcement.mjs` is the decision module. It's pure (side-effect collaborators injected) so it's testable in isolation. Areas worth attention:
 
-Add an entry to `VERTICAL_GUIDANCE`:
+- Better deviation messages (so the agent gets useful feedback, not just "blocked")
+- Richer approval-state tracking
+- Graph-state telemetry for V1 debugging
 
-```js
-const VERTICAL_GUIDANCE = {
-  // ...existing...
-  <name>: {
-    description: "Short description for the compile prompt.",
-    tools: ["<tool_a>", "<tool_b>", ...],
-    rules: [
-      `The entry node's allowed_tools MUST include "<entry_tool>".`,
-      // ...sequencing rules
-    ],
-    tool_descriptions: `- <tool_a>: ...
-- <tool_b>: ...`,
-  },
-};
-```
+### 5. New host integrations (rare but high-value)
 
-And add keyword routing in `detectVertical()`:
+If a new agent runtime appears (Hermes, OpenAI Agent SDK, LangGraph, CrewAI), wiring up a BetterClaw plugin or hook adapter for it is a meaningful contribution. The pattern is documented in `packages/plugin-cowork/` and `packages/plugin-openclaw/`. Both register `before_tool_call` and `before_prompt_build` analogues; the rest is host-specific glue.
 
-```js
-if (hit("keyword1", "keyword2", "<phrase specific to your vertical>"))
-  return "<name>";
-```
+### 6. Documentation
 
-Put specific verticals before generic ones (e.g. "support" tickets before "email"), because the first match wins.
+If something in the docs is unclear, wrong, or stale, send a PR. README, QUICKSTART, and per-package READMEs are all fair game.
 
-### Testing the new vertical
+## Local development setup
 
 ```bash
-# Edit → no reinstall needed; plugin was installed with --link
-betterclaw "<paragraph that exercises your new vertical>"
-# Review the compiled graph in the browser → approve (y)
-betterclaw run "<task>"             # wraps `openclaw agent --local --agent main -m <task>`
-# Verify [ALLOW] lines show your tools firing
-betterclaw view                      # see the replay
+git clone https://github.com/jfan22/BetterClaw.git
+cd BetterClaw
+pnpm install
+ln -sf $PWD/packages/cli/bin/betterclaw ~/.local/bin/betterclaw
+
+# OpenClaw plugin (linked, so edits take effect immediately)
+openclaw plugins install $PWD/packages/plugin-openclaw --link
+openclaw config set plugins.allow '["betterclaw"]'
+
+# Cowork plugin (Claude Desktop)
+claude --plugin-dir $PWD/packages/plugin-cowork
 ```
 
-### Common patterns
+## Testing your changes
 
-- **Stub backend for v1, real backend later.** Start with an embedded catalog / fake data. Prove the vertical end-to-end. Then replace with a real MCP (HubSpot, Salesforce, Amadeus, etc.) without touching the graph schema.
-- **Use `Type.Optional` for non-required parameters.** The compiler doesn't need to understand all of them; agents will figure out which to pass.
-- **Tool descriptions are for the agent, not the user.** Write them as if you're briefing an agent: what does it do, what does it return, what's the input shape.
-- **Return `{content: [{type: "text", text: "..."}]}` for normal results.** Return `{...content, isError: true}` for tool-level errors. This is the standard MCP tool-result shape.
+```bash
+# Compile your test paragraph
+betterclaw "<paragraph>"
 
-### What NOT to do
+# Review the graph in the browser, approve (y) or decline (N)
+# Decline if you just want to see what compiled — graph isn't written
 
-- **Don't put vertical-specific state in `index.mjs`.** The main plugin is the dispatcher — it shouldn't know what a "lead" or "flight" is. All domain state belongs in the vertical file.
-- **Don't import subprocess-spawning modules from plugin code.** OpenClaw's install-time safety scanner does a **regex match** (not AST analysis) on the literal strings `child_process` and `spawn(` — even in comments. Any mention blocks the install. If a vertical genuinely needs to drive an external MCP subprocess (like email does for Gmail), wire it through the BetterClaw CLI daemon (`packages/cli/bin/betterclaw` owns all subprocesses) and talk to the daemon over the Unix socket from the plugin side. See `packages/plugin-openclaw/mcp-proxy-client.mjs` for the pattern. Prefer `fetch()` to a public HTTP API when the vertical doesn't require MCP.
-- **Don't try to share tools across verticals.** If two verticals both want "send email," each should declare its own tool. Cross-vertical composition can come later via plugin dependencies.
+# Run the agent
+betterclaw run "<task>"
 
-### The full cost
+# Inspect what happened
+cat packages/plugin-openclaw/run.jsonl     # per-turn enforcement events
+betterclaw view                             # post-hoc replay HTML
+betterclaw view --watch                     # live view in browser
+```
 
-~50 LOC of tool stubs + 8 lines of compiler guidance + 3 lines in the vertical map. If you want a working demo, add a sentence or two of test setup in the README.
+For pure-module tests on `enforcement.mjs` / `workflow.mjs`, write standalone Node scripts that pass mock `runLogger` / `telemetry` collaborators and assert on the decision returned. There's no test framework in the repo today; if you want to add one, that's a fine PR too.
+
+## What NOT to do
+
+- **Don't add new verticals.** v0.2 model. Use Cowork connectors or MCP servers instead.
+- **Don't import subprocess-spawning modules from plugin code.** OpenClaw's install-time safety scanner does a **regex match** (not AST analysis) on literal strings `child_process` and `spawn(` — even in comments. Any mention blocks the install. The plugin should be pure code; subprocesses live in the CLI's daemon path (`packages/cli/bin/betterclaw`).
+- **Don't bundle credentials or third-party API keys** in any package. The Gmail fallback's `~/.gmail-mcp/gcp-oauth.keys.json` lives in the user's home dir, never in the repo.
+- **Don't break the v0.3 graph format.** Adding new optional fields is fine; renaming or removing existing ones (`entry`, `nodes`, `edges`, `requires_approval`, `max_reconsider_retries`) breaks the migration story.
 
 ## Filing bugs
 
-- **OpenClaw-side bugs** (hook wrapping, plugin SDK gaps): open an issue in the OpenClaw repo. BetterClaw v0.2.1+ requires openclaw ≥ 2026.4.24 (the version that ships PR #71159's `before_tool_call` hook wiring and PR #70625's `before_prompt_build` cli-runner fix). If you hit a hook-firing issue, first verify via `openclaw --version` that you're on 2026.4.24 or later.
-- **BetterClaw-side bugs**: open an issue here. Include `betterclaw doctor` output, the active graph, and the run.jsonl if available.
+- **OpenClaw-side bugs** (hook wrapping, plugin SDK gaps, MCP issues): open an issue in the OpenClaw repo. BetterClaw v0.3.0+ requires openclaw ≥ 2026.4.24.
+- **BetterClaw-side bugs**: open an issue here. Include:
+  - `betterclaw doctor` output
+  - The compiled `active-graph.json`
+  - The `run.jsonl` if you ran the agent
+  - The exact paragraph if it's a compile bug
 
 ## License
 
-BetterClaw is licensed under **[Apache License 2.0](./LICENSE)**. Chosen over MIT for the explicit patent grant, which matters for the enterprise-compliance wedge we're building toward. Third-party attribution lives in [NOTICE](./NOTICE).
+BetterClaw is licensed under **[Apache License 2.0](./LICENSE)**. Chosen over MIT for the explicit patent grant. Third-party attribution lives in [NOTICE](./NOTICE).
 
 Contributions are accepted under the same Apache-2.0 terms per §5 of the license ("Submission of Contributions"). By opening a PR, you agree your contribution is licensed under Apache-2.0 without any additional conditions.

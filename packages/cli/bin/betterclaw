@@ -46,6 +46,31 @@ const MCP_SOCKET_PATH = path.join(os.homedir(), ".betterclaw", "mcp.sock");
 const MCP_PID_PATH = path.join(os.homedir(), ".betterclaw", "mcp.pid");
 const MCP_LOG_PATH = path.join(os.homedir(), ".betterclaw", "mcp.log");
 
+// Opt-in marker for the Gmail MCP fallback. Per ADR 0002 (v0.3+), the
+// BetterClaw-bundled Gmail integration is opt-in for OpenClaw users without
+// Cowork. Cowork users get Gmail via Anthropic's verified connector and don't
+// need this. The marker is written by `betterclaw connect gmail` and removed
+// by `betterclaw disconnect gmail`. ensureDaemonRunning() respects it.
+const GMAIL_FALLBACK_MARKER_PATH = path.join(os.homedir(), ".betterclaw", "gmail-fallback-enabled");
+
+function isGmailFallbackEnabled() {
+  return fs.existsSync(GMAIL_FALLBACK_MARKER_PATH);
+}
+
+// Host detection. Informational — used to shape error messages and guidance,
+// not to gate functionality. Returns one of:
+//   "cowork"   — running under Anthropic Claude Code/Desktop (CLAUDE_PLUGIN_ROOT set)
+//   "openclaw" — running under OpenClaw (OPENCLAW_* env vars or ~/.openclaw/ exists)
+//   "manual"   — running standalone from a shell, no host integration
+function detectHost() {
+  if (process.env.CLAUDE_PLUGIN_ROOT || process.env.CLAUDE_PROJECT_DIR) return "cowork";
+  for (const k of Object.keys(process.env)) {
+    if (k.startsWith("OPENCLAW_")) return "openclaw";
+  }
+  if (fs.existsSync(path.join(os.homedir(), ".openclaw"))) return "openclaw";
+  return "manual";
+}
+
 // Per-session workflow state for hook-model plugins (Cowork). Unlike the
 // long-lived plugin VM of OpenClaw, shell-command hooks fire per-invocation
 // with no in-memory state, so we persist current_node + reconsider_counter
@@ -62,7 +87,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.2.1";
+const BETTERCLAW_VERSION = "0.3.0";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -644,55 +669,17 @@ const MERMAID_INIT_JS = `
 `;
 
 
-const VERTICAL_GUIDANCE = {
-  email: {
-    description: "Gmail triage — search, read, draft replies.",
-    tools: ["gmail_search", "gmail_read", "gmail_draft"],
-    rules: [
-      `The entry node's allowed_tools MUST include "gmail_search".`,
-      `Reading ("gmail_read") must come after searching.`,
-      `Drafting ("gmail_draft") must come after reading.`,
-    ],
-    tool_descriptions: `- gmail_search: search/list emails (Gmail query syntax: "in:inbox", "from:x@y", "is:unread")
-- gmail_read: read one email's full content by message ID
-- gmail_draft: create a draft reply (never sends)`,
-  },
-  shopping: {
-    description: "Online shopping — real catalog via dummyjson.com (194 products, 24 categories). Search, inspect, compare.",
-    tools: ["shop_search", "shop_details", "shop_compare"],
-    rules: [
-      `The entry node's allowed_tools MUST include "shop_search".`,
-      `Fetching details ("shop_details") must come after searching.`,
-      `Comparing ("shop_compare") must come after you have at least two candidates.`,
-    ],
-    tool_descriptions: `- shop_search: keyword search across titles and descriptions; optional maxPrice + category filter (valid categories: beauty, fragrances, furniture, groceries, home-decoration, kitchen-accessories, laptops, mens-shirts, mens-shoes, mens-watches, mobile-accessories, motorcycle, skin-care, smartphones, sports-accessories, sunglasses, tablets, tops, vehicle, womens-bags, womens-dresses, womens-jewellery, womens-shoes, womens-watches)
-- shop_details: fetch full product record (description, reviews summary, availability, warranty, shipping, return policy)
-- shop_compare: side-by-side of two products with price/rating/discount/category delta`,
-  },
-  sales: {
-    description: "Sales — find leads, enrich, draft personalized outreach.",
-    tools: ["sales_find_leads", "sales_enrich", "sales_draft_outreach"],
-    rules: [
-      `The entry node's allowed_tools MUST include "sales_find_leads".`,
-      `Enriching ("sales_enrich") must come after finding leads.`,
-      `Drafting outreach ("sales_draft_outreach") must come after enriching — never blind-spam.`,
-    ],
-    tool_descriptions: `- sales_find_leads: filter lead catalog by industry / size / keyword
-- sales_enrich: fetch full detail for one lead
-- sales_draft_outreach: compose personalized outreach email for one lead`,
-  },
-  travel: {
-    description: "Travel — flight + hotel search, comparison.",
-    tools: ["travel_search_flights", "travel_search_hotels", "travel_compare_flights"],
-    rules: [
-      `The entry node's allowed_tools MUST include one of "travel_search_flights" or "travel_search_hotels".`,
-      `Comparing ("travel_compare_flights") must come after searching has returned candidates.`,
-    ],
-    tool_descriptions: `- travel_search_flights: find flights between two airports (3-letter codes), optional max price
-- travel_search_hotels: find hotels in a city, optional max price/night and min rating
-- travel_compare_flights: side-by-side comparison of two flight ids`,
-  },
-};
+// Common Anthropic-connector services (Cowork). The compile prompt hints at
+// these so Claude can pick concrete tool names when the user's paragraph
+// implies an action in one of these domains. List is informational; the
+// actual available tools depend on which connectors the user has enabled in
+// Claude.ai. Connectors verified in the Phase 0 spike.
+const COMMON_COWORK_CONNECTORS = [
+  { service: "Gmail", prefix: "mcp__claude_ai_Gmail__", actions_hint: "send_email, list_messages, get_message, search, draft_email" },
+  { service: "Google_Calendar", prefix: "mcp__claude_ai_Google_Calendar__", actions_hint: "list_calendars, list_events, create_event, update_event, delete_event, suggest_time, respond_to_event" },
+  { service: "Google_Drive", prefix: "mcp__claude_ai_Google_Drive__", actions_hint: "search, read, list" },
+  { service: "Apollo_io", prefix: "mcp__claude_ai_Apollo_io__", actions_hint: "apollo_contacts_search, apollo_mixed_people_api_search, apollo_organizations_enrich, apollo_emailer_campaigns_search" },
+];
 
 const args = process.argv.slice(2);
 
@@ -836,6 +823,16 @@ if (args[0] === "mcp-daemon") {
 }
 
 if (args[0] === "start") {
+  // Per ADR 0002 (v0.3+), `betterclaw start` is for the opt-in Gmail MCP
+  // fallback. If the user hasn't run `betterclaw connect gmail`, there's
+  // nothing to start — refuse with a clear pointer.
+  if (!isGmailFallbackEnabled()) {
+    console.error(`  ${deny("✗")}  Gmail MCP fallback is not enabled. The daemon won't start.`);
+    console.error(`     Most users don't need this — Cowork users get Gmail via Anthropic's`);
+    console.error(`     verified connector with zero setup. To enable the OpenClaw fallback:`);
+    console.error(`        ${accent("betterclaw connect gmail")}`);
+    process.exit(1);
+  }
   startDetachedDaemon();
   process.exit(process.exitCode ?? 0);
 }
@@ -843,6 +840,27 @@ if (args[0] === "start") {
 if (args[0] === "stop") {
   stopDaemon();
   process.exit(process.exitCode ?? 0);
+}
+
+if (args[0] === "connect") {
+  if (args[1] !== "gmail") {
+    console.error(`  ${deny("✗")}  Usage: betterclaw connect gmail`);
+    console.error(`     Currently only "gmail" is supported. This is the OpenClaw fallback`);
+    console.error(`     for users without Cowork. Cowork users get Gmail via Anthropic's`);
+    console.error(`     verified connector — no \`betterclaw connect\` needed.`);
+    process.exit(1);
+  }
+  connectGmail();
+  process.exit(0);
+}
+
+if (args[0] === "disconnect") {
+  if (args[1] !== "gmail") {
+    console.error(`  ${deny("✗")}  Usage: betterclaw disconnect gmail`);
+    process.exit(1);
+  }
+  disconnectGmail();
+  process.exit(0);
 }
 
 if (args[0] === "status") {
@@ -931,18 +949,17 @@ console.log();
 console.log("  " + ui.kicker("BetterClaw · Compile"));
 console.log("  " + ui.hr());
 
-const verticalId = detectVertical(paragraph);
-console.log(`  ${dim("vertical")}       ${ui.chip(verticalId, "accent")}`);
+const _hostId = detectHost();
+console.log(`  ${dim("host")}           ${ui.chip(_hostId, "accent")}`);
 console.log(`  ${dim("compiling via")}  ${accent("claude -p")} ${gray("(model=opus)")}`);
-const prompt = buildCompilePrompt(paragraph, verticalId);
+const prompt = buildCompilePrompt(paragraph);
 const _compileStartMs = Date.now();
 const graph = compileWithClaude(prompt);
 const _compileDurationMs = Date.now() - _compileStartMs;
-if (!graph.vertical) graph.vertical = verticalId;
 validateGraph(graph);
 
 emitTelemetry("compile", {
-  vertical: verticalId,
+  host: _hostId,
   duration_ms: _compileDurationMs,
   node_count: graph.nodes.length,
   edge_count: graph.edges.length,
@@ -1110,17 +1127,21 @@ function runDoctor() {
     fix: `openclaw plugins install ${PLUGIN_ROOT} --link && openclaw config set plugins.allow '["betterclaw"]'`,
   });
 
-  // MCP daemon status
+  // Gmail MCP daemon — only required if the user opted into the fallback
   const daemonStatus = readDaemonStatus();
+  const gmailFallback = isGmailFallbackEnabled();
   checks.push({
-    name: "MCP daemon running",
-    ok: daemonStatus.running,
-    detail: daemonStatus.running
-      ? `pid=${daemonStatus.pid}, socket=${MCP_SOCKET_PATH}`
-      : daemonStatus.staleFile
-        ? `stale PID file (pid=${daemonStatus.pid} not alive)`
-        : "not running — tool calls that need Gmail will fail",
-    fix: "betterclaw start",
+    name: "Gmail MCP daemon (opt-in)",
+    ok: gmailFallback ? daemonStatus.running : true,
+    detail: !gmailFallback
+      ? "fallback not enabled (this is fine — most users don't need it; Cowork has Gmail built-in)"
+      : daemonStatus.running
+        ? `pid=${daemonStatus.pid}, socket=${MCP_SOCKET_PATH}`
+        : daemonStatus.staleFile
+          ? `stale PID file (pid=${daemonStatus.pid} not alive)`
+          : "fallback enabled but daemon not running",
+    fix: gmailFallback ? "betterclaw start" : null,
+    optional: !gmailFallback,
   });
 
   // Claude CLI auth profile
@@ -1139,27 +1160,40 @@ function runDoctor() {
 
   // Active graph
   const graphOk = fs.existsSync(GRAPH_PATH) && fs.statSync(GRAPH_PATH).size > 0;
-  let vertical = null;
+  let graphSummary = null;
   if (graphOk) {
     try {
-      vertical = JSON.parse(fs.readFileSync(GRAPH_PATH, "utf8")).vertical ?? "(none)";
+      const g = JSON.parse(fs.readFileSync(GRAPH_PATH, "utf8"));
+      graphSummary = `${g.nodes?.length ?? 0} nodes, entry=${g.entry ?? "(unknown)"}`;
     } catch {}
   }
   checks.push({
     name: "active-graph.json present",
     ok: graphOk,
-    detail: graphOk ? `vertical=${vertical}` : "no graph compiled yet",
+    detail: graphOk ? graphSummary : "no graph compiled yet",
     fix: `betterclaw "<your task>"`,
   });
 
-  // Email-specific checks (only warn — email is optional)
+  // Host environment (informational)
+  checks.push({
+    name: "Host environment",
+    ok: true,
+    detail: detectHost(),
+    optional: true,
+  });
+
+  // Gmail OAuth credentials — only relevant if fallback was enabled
   const gmailCredOk = fs.existsSync(path.join(os.homedir(), ".gmail-mcp", "credentials.json"));
   checks.push({
-    name: "Gmail OAuth credentials (optional)",
-    ok: gmailCredOk,
-    detail: gmailCredOk ? "~/.gmail-mcp/credentials.json present" : "missing (only needed for email vertical)",
-    fix: "See QUICKSTART.md §4 for Gmail setup.",
-    optional: !gmailCredOk,
+    name: "Gmail OAuth credentials (only if fallback enabled)",
+    ok: !gmailFallback || gmailCredOk,
+    detail: !gmailFallback
+      ? "fallback not enabled — credentials not required"
+      : gmailCredOk
+        ? "~/.gmail-mcp/credentials.json present"
+        : "missing — run `npx @gongrzhe/server-gmail-autoauth-mcp auth`",
+    fix: gmailFallback ? "npx @gongrzhe/server-gmail-autoauth-mcp auth" : null,
+    optional: !gmailFallback,
   });
 
   // Stale day-1 gmail-mcp bundle — warn if both present (old conflict)
@@ -1172,7 +1206,7 @@ function runDoctor() {
       name: "Day-1 gmail-mcp bundle (should be disabled)",
       ok: !bundleLoaded,
       detail: bundleLoaded
-        ? "LOADED — this will shadow BetterClaw's email enforcement!"
+        ? "LOADED — this will conflict with BetterClaw's Gmail fallback if enabled!"
         : "disabled (good)",
       fix: "openclaw plugins disable gmail-mcp",
     });
@@ -1228,20 +1262,22 @@ function printHelp() {
   console.log(pair(`betterclaw approve <id>`,        `Approve a pending request`));
   console.log(pair(`betterclaw deny <id>`,           `Deny a pending request`));
   console.log(pair(`betterclaw doctor`,              `Diagnose setup problems`));
-  console.log(ui.section("  Daemon (Gmail MCP proxy)"));
-  console.log(pair(`betterclaw start`,               `Start the daemon detached (idempotent)`));
+  console.log(ui.section("  Gmail fallback (OpenClaw users without Cowork)"));
+  console.log(pair(`betterclaw connect gmail`,       `Enable BetterClaw's bundled Gmail integration (requires GCP setup)`));
+  console.log(pair(`betterclaw disconnect gmail`,    `Disable the Gmail fallback`));
+  console.log(pair(`betterclaw start`,               `Start the Gmail MCP daemon detached (idempotent)`));
   console.log(pair(`betterclaw stop`,                `Stop the running daemon`));
   console.log(pair(`betterclaw status`,              `Show daemon status (pid, socket, log path)`));
   console.log(pair(`betterclaw mcp-daemon`,          `Run daemon in foreground (stderr logs visible)`));
   console.log(ui.section("  Telemetry (local, no PII)"));
   console.log(pair(`betterclaw telemetry`,           `Show enabled/disabled + event count`));
-  console.log(pair(`betterclaw telemetry dump`,      `Summary by event type / vertical / day`));
+  console.log(pair(`betterclaw telemetry dump`,      `Summary by event type / host / day`));
   console.log(pair(`betterclaw telemetry off`,       `Disable (no future events written)`));
   console.log(pair(`betterclaw telemetry on`,        `Re-enable`));
   console.log(pair(`betterclaw telemetry export`,     `Dump raw JSONL to stdout (supports --since YYYY-MM-DD)`));
   console.log(pair(`betterclaw telemetry dismiss-cta`,`Stop the day-3 "grab 15 min?" prompt`));
   console.log(ui.section("  Library & marketplace"));
-  console.log(pair(`betterclaw presets`,             `List bundled preset workflows (one per vertical)`));
+  console.log(pair(`betterclaw presets`,             `List bundled preset workflows`));
   console.log(pair(`betterclaw presets <name>`,      `Install a preset as the active graph`));
   console.log(pair(`betterclaw save <name>`,         `Snapshot the active graph into ~/.betterclaw/library`));
   console.log(pair(`betterclaw load <name>`,         `Load a saved graph as the active graph`));
@@ -1255,9 +1291,16 @@ function printHelp() {
   console.log(pair(`betterclaw --help`,              `This message`));
   console.log();
   console.log("  " + ui.kicker("Quick start"));
-  console.log(desc(`Try the shopping preset (zero setup):`));
-  console.log(desc("    " + accent(`betterclaw presets shopping-compare`)));
-  console.log(desc("    " + accent(`betterclaw run "Find a good laptop under $1500, compare the top two"`)));
+  console.log(desc(`Tools come from your host environment:`));
+  console.log(desc(`  • Cowork (Claude Desktop): enable Gmail / Calendar / Apollo connectors in Claude.ai`));
+  console.log(desc(`  • OpenClaw: install MCP servers, OR run \`betterclaw connect gmail\` for the fallback`));
+  console.log();
+  console.log(desc(`Then compile + run any task in plain English:`));
+  console.log(desc("    " + accent(`betterclaw "schedule a meeting with the team next Tuesday and email the agenda"`)));
+  console.log(desc("    " + accent(`betterclaw run "<your-paragraph>"`)));
+  console.log();
+  console.log(desc(`Tutorial demo (no external setup needed):`));
+  console.log(desc("    " + accent(`BETTERCLAW_DEMO=1 betterclaw "find a wireless mouse under $50, compare the top two"`)));
   console.log();
 }
 
@@ -2706,6 +2749,96 @@ function stopDaemon() {
   }
 }
 
+// Enable the Gmail MCP fallback. Writes the marker file so subsequent
+// `betterclaw run` invocations auto-start the daemon, and the OpenClaw plugin
+// (when it boots and sees the marker) registers vertical-email's tools.
+//
+// Per ADR 0002 (v0.3+), this is the OpenClaw-without-Cowork path. Cowork users
+// should NOT run this — their Gmail comes from Anthropic's verified connector.
+function connectGmail() {
+  const host = detectHost();
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Connect Gmail (OpenClaw fallback)"));
+  console.log("  " + ui.hr());
+
+  if (host === "cowork") {
+    console.log(`  ${dim("Note:")}  You're running under Cowork. Anthropic ships a verified Gmail`);
+    console.log(`         connector — enable it in Claude.ai instead of using this fallback.`);
+    console.log(`         This BetterClaw fallback is for OpenClaw users without Cowork.`);
+    console.log();
+    console.log(`         If you really want the BetterClaw fallback anyway, continue.`);
+    console.log();
+  }
+
+  if (isGmailFallbackEnabled()) {
+    console.log(`  ${allow("✓")}  Gmail fallback is already enabled.`);
+    console.log(`     Marker: ${GMAIL_FALLBACK_MARKER_PATH}`);
+    console.log();
+    console.log(`     Next steps:`);
+    console.log(`       • Authenticate with Google: ${accent("npx @gongrzhe/server-gmail-autoauth-mcp auth")}`);
+    console.log(`       • Start the daemon:        ${accent("betterclaw start")}`);
+    console.log(`       • Verify it's running:     ${accent("betterclaw status")}`);
+    console.log(`       • Disable later:           ${accent("betterclaw disconnect gmail")}`);
+    return;
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(GMAIL_FALLBACK_MARKER_PATH), { recursive: true });
+    fs.writeFileSync(
+      GMAIL_FALLBACK_MARKER_PATH,
+      JSON.stringify({ enabled_at: new Date().toISOString(), host }) + "\n",
+    );
+  } catch (err) {
+    console.error(`  ${deny("✗")}  Failed to write marker: ${err.message}`);
+    process.exit(1);
+  }
+
+  console.log(`  ${allow("✓")}  Gmail fallback enabled.`);
+  console.log(`     Marker: ${GMAIL_FALLBACK_MARKER_PATH}`);
+  console.log();
+  console.log(`     ${bold("Next steps:")}`);
+  console.log();
+  console.log(`     1. Set up a Google Cloud project + OAuth credentials:`);
+  console.log(`        See https://github.com/gongrzhe/server-gmail-autoauth-mcp#setup`);
+  console.log(`        (this requires a GCP account; if that's a wall, use Cowork instead)`);
+  console.log();
+  console.log(`     2. Authenticate (one-time, opens a browser):`);
+  console.log(`        ${accent("npx @gongrzhe/server-gmail-autoauth-mcp auth")}`);
+  console.log();
+  console.log(`     3. Start the daemon:`);
+  console.log(`        ${accent("betterclaw start")}`);
+  console.log();
+  console.log(`     4. Verify it's running:`);
+  console.log(`        ${accent("betterclaw status")}`);
+  console.log();
+  console.log(`     5. To disable later:`);
+  console.log(`        ${accent("betterclaw disconnect gmail")}`);
+}
+
+function disconnectGmail() {
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Disconnect Gmail"));
+  console.log("  " + ui.hr());
+  if (!isGmailFallbackEnabled()) {
+    console.log(`  ${dim("(no-op)")}  Gmail fallback was not enabled.`);
+    return;
+  }
+  try {
+    fs.unlinkSync(GMAIL_FALLBACK_MARKER_PATH);
+  } catch (err) {
+    console.error(`  ${deny("✗")}  Failed to remove marker: ${err.message}`);
+    process.exit(1);
+  }
+  console.log(`  ${allow("✓")}  Gmail fallback disabled. Marker removed.`);
+  // Best-effort: stop the daemon if it's running. Don't error if it's already
+  // stopped or never started.
+  const status = readDaemonStatus();
+  if (status.running) {
+    console.log(`  ${dim("…")}  Stopping the running daemon`);
+    try { process.kill(status.pid, "SIGTERM"); } catch {}
+  }
+}
+
 function printDaemonStatus() {
   const status = readDaemonStatus();
   console.log();
@@ -2748,9 +2881,15 @@ function readDaemonStatus() {
 }
 
 function ensureDaemonRunning() {
+  // Per ADR 0002 (v0.3+), the Gmail MCP daemon is opt-in. It only starts when
+  // the user has explicitly run `betterclaw connect gmail`, which writes the
+  // GMAIL_FALLBACK_MARKER_PATH file. Without the marker, the daemon stays
+  // dormant — the host environment (Cowork connectors or user MCP servers)
+  // is expected to provide tools.
+  if (!isGmailFallbackEnabled()) return;
   const status = readDaemonStatus();
   if (status.running) return;
-  console.log(`  ${dim("…")}  Daemon not running; starting it now`);
+  console.log(`  ${dim("…")}  Gmail fallback daemon not running; starting it now`);
   startDetachedDaemon();
 }
 
@@ -3349,84 +3488,48 @@ function preflightCheck() {
   }
 }
 
-function detectVertical(paragraph) {
-  const p = paragraph.toLowerCase();
-  // Explicit override: "vertical: shopping" anywhere in the paragraph.
-  const explicit = p.match(/vertical[:=]\s*(email|shopping|sales|travel)/);
-  if (explicit) return explicit[1];
+function buildCompilePrompt(paragraph) {
+  const connectorHints = COMMON_COWORK_CONNECTORS
+    .map((c) => `- ${c.prefix}<action>  (e.g. ${c.actions_hint})`)
+    .join("\n");
 
-  const hit = (...terms) => terms.some((t) => p.includes(t));
-  // Check specific verticals first; "email" is the catch-all fallback because
-  // "email" as a bare keyword is too common (e.g. "cold email" is sales).
-  if (hit("lead", "prospect", "outreach", "crm", "cold email", "sdr", "cold outreach", " sales "))
-    return "sales";
-  if (hit("flight", "hotel", "travel ", "trip ", "airfare", "booking", "itinerary", "airport"))
-    return "travel";
-  // Shopping — match explicit retail verbs, price-comparison intent, product
-  // categories from the dummyjson vocabulary, and gift-shopping patterns.
-  // "shipping" isn't here because it's ambiguous (email with shipping-update
-  // context). Use other signals.
-  if (
-    hit(
-      // retail verbs + patterns
-      "shop ", "shop for", "shopping for", "buy ", "purchase", "add to cart",
-      "price compare", "online store", "electronics store",
-      // generic product intent
-      "product", "catalog", "recommend a ", "good ", "best ",
-      // gift-shopping patterns (Mother's Day, Father's Day, birthday, etc.)
-      "gift", "mother's day", "father's day", "birthday present", "anniversary gift",
-      // dummyjson category vocabulary
-      "smartphone", "laptop", "tablet", "wireless mouse", "headphones", "smartwatch",
-      "jewellery", "jewelry", "fragrance", "perfume", "sunglasses",
-      "skin-care", "skin care", "beauty product", "makeup",
-      "home-decoration", "home decor", "kitchen-accessories",
-      "mens-shirt", "mens-shoes", "mens-watches",
-      "womens-bag", "womens-dress", "womens-jewellery", "womens-shoes", "womens-watches",
-    )
-  )
-    return "shopping";
-  if (hit("inbox", "gmail", "draft reply", "triage my inbox", "newsletters", "my email", "my inbox", "emails from"))
-    return "email";
-  // Last-resort default: warn rather than silently picking a vertical.
-  // The caller will see it and either add --vertical=X or rewrite the paragraph.
-  return "email";
-}
-
-function buildCompilePrompt(paragraph, verticalId) {
-  const g = VERTICAL_GUIDANCE[verticalId];
-  if (!g) {
-    throw new Error(`unknown vertical: ${verticalId}`);
-  }
   return `You are a workflow compiler for the BetterClaw agent-guardrail system.
 
-The target vertical is: **${verticalId}** — ${g.description}
+BetterClaw is a workflow-enforcement layer. It does NOT own or bundle tools. Tools come from the host environment: Anthropic Cowork connectors (Gmail, Google Calendar, Google Drive, Apollo.io, etc.) when running under Claude Desktop, or user-installed MCP servers when running under OpenClaw. Your job is to translate the user's paragraph into a workflow graph that gates calls to those host-provided tools.
 
 SCHEMA (return exactly this shape, nothing else):
 {
-  "vertical": "${verticalId}",
   "entry": "<node_id>",
   "max_reconsider_retries": 3,
   "requires_approval": ["<tool_name>", ...],
   "nodes": [
-    { "id": "<id>", "purpose": "<human-readable sentence>", "allowed_tools": ["..."] }
+    { "id": "<id>", "purpose": "<human-readable sentence>", "allowed_tools": ["<concrete_tool_name>", ...] }
   ],
   "edges": [
     { "from": "<node_id>", "to": "<node_id>" }
   ]
 }
 
-requires_approval lists tools that require human approval mid-run. Include a tool here if the paragraph implies manual review — phrases like "let me approve", "ask me first", "check with me" — especially around drafting, sending, purchasing, or any irreversible action. Empty array [] if no approval needed.
+TOOL NAMES — use concrete, host-provided names. Common Anthropic-connector patterns:
+${connectorHints}
 
-AVAILABLE TOOLS for vertical "${verticalId}":
-${g.tool_descriptions}
+User-installed MCP servers expose their own tools as \`mcp__<server_name>__<action>\` (e.g. \`mcp__filesystem__read_file\`). Pick names that fit the user's paragraph; the actual availability is validated at runtime when the agent calls the tool. If the user clearly references an action (send email, schedule meeting, search contacts), pick the concrete tool name that performs it.
+
+requires_approval lists tools that require human approval mid-run. Include a tool here if the paragraph implies manual review — phrases like "let me approve", "ask me first", "check with me" — especially around sending, deleting, posting, purchasing, or any irreversible action. Empty array [] if no approval needed.
+
+CRITICAL — approval gate placement: when the user asks for approval before an irreversible action, requires_approval MUST contain the IRREVERSIBLE tool, NOT a preceding draft/preview tool. Drafts are reversible by definition (you can edit or delete them); sends are not. Examples:
+- "let me approve before sending the email" → gate the SEND tool (e.g. mcp__claude_ai_Gmail__send_email), not the draft tool
+- "check with me before posting" → gate the POST tool, not the compose tool
+- "ask before purchasing" → gate the PURCHASE tool, not the cart tool
 
 RULES:
-${g.rules.map((r, i) => `${i + 1}. ${r}`).join("\n")}
-${g.rules.length + 1}. Keep the graph small: 2 to 5 nodes.
-${g.rules.length + 2}. Every node must have at least one allowed_tool from the list above.
-${g.rules.length + 3}. Include return edges so the agent can loop back (e.g. after one item, handle the next).
-${g.rules.length + 4}. Node ids: snake_case and descriptive (e.g. "list_inbox", "compare_flights"), NOT "node1".
-${g.rules.length + 5}. The "purpose" field on each node must be a concrete human-readable sentence visible in the graph visualization.
+1. Keep the graph small: 2 to 5 nodes.
+2. Every node's allowed_tools must actually perform that node's purpose. If the node's purpose is to SEND, the tool must be a send action (e.g. send_email, send_message, post_message). If DELETE, the tool must be a delete action. Do NOT substitute a safer/more-conservative draft/preview tool for a node whose purpose is the irreversible action — runtime will surface unknown tool names with a clear error if you guess wrong, which is fine.
+3. Node ids: snake_case and descriptive (e.g. "search_inbox", "draft_reply", "schedule_meeting"), NOT "node1".
+4. The "purpose" field on each node must be a concrete human-readable sentence visible in the graph visualization.
+5. Return edges are conditional. For BATCH workflows (the agent processes multiple items in one run — e.g. "triage 10 emails", "compare 3 products", "process each lead"), include a return edge from the last node back to the entry or a mid-flow node so the agent can pick up the next item. For SINGLE-EVENT workflows (the agent does one thing once — e.g. "send a single email", "schedule one meeting", "play music when I get home"), do NOT add a return edge to entry; the workflow is acyclic and ends at the final node.
+6. Order nodes by causal dependency: search before read, read before draft, draft before send, etc.
+7. If the paragraph references an action you cannot map to a plausible host-provided tool, emit ONE node with id "unrecognized_action" and allowed_tools: [] — at runtime the user will see a clear error pointing them to enable a connector or install an MCP server. Do NOT invent tool names that don't follow the conventions above.
 
 CRITICAL: Output ONLY the JSON object. No markdown code fences. No explanation before or after.
 
@@ -3585,21 +3688,23 @@ function validateGraph(graph) {
 
   const nodeIds = new Set(graph.nodes.map((n) => n.id));
 
-  // Allowed tools depend on the graph's declared vertical. Default to email
-  // for back-compat with older graphs that predate the vertical field.
-  const vId = graph.vertical ?? "email";
-  const vGuidance = VERTICAL_GUIDANCE[vId];
-  if (!vGuidance) errors.push(`unknown vertical "${vId}"`);
-  const allowedTools = new Set(vGuidance ? vGuidance.tools : []);
-
+  // Per ADR 0002 (v0.3+), BetterClaw doesn't own a tool registry — tools come
+  // from the host environment (Cowork connectors, user MCP servers). Compile
+  // validation only checks shape; runtime validation happens when the agent
+  // actually calls the tool. Empty allowed_tools is a special sentinel
+  // (paired with node id "unrecognized_action") that lets the compile complete
+  // and surfaces a clear error when the agent runs.
   for (const n of graph.nodes) {
     if (typeof n.id !== "string") errors.push(`node missing id: ${JSON.stringify(n)}`);
     if (typeof n.purpose !== "string") errors.push(`node "${n.id}" missing purpose`);
-    if (!Array.isArray(n.allowed_tools) || n.allowed_tools.length === 0)
-      errors.push(`node "${n.id}" has empty allowed_tools`);
+    if (!Array.isArray(n.allowed_tools)) {
+      errors.push(`node "${n.id}" allowed_tools must be an array`);
+    } else if (n.allowed_tools.length === 0 && n.id !== "unrecognized_action") {
+      errors.push(`node "${n.id}" has empty allowed_tools (only the "unrecognized_action" sentinel may have []`);
+    }
     for (const t of n.allowed_tools ?? []) {
-      if (!allowedTools.has(t))
-        errors.push(`node "${n.id}" references unknown tool "${t}" (allowed: ${[...allowedTools].join(", ")})`);
+      if (typeof t !== "string" || t.length === 0)
+        errors.push(`node "${n.id}" has non-string tool entry: ${JSON.stringify(t)}`);
     }
   }
 
@@ -3614,9 +3719,15 @@ function validateGraph(graph) {
     if (!Array.isArray(graph.requires_approval)) {
       errors.push("requires_approval must be an array of tool names");
     } else {
+      // Tools listed in requires_approval must appear in at least one node's
+      // allowed_tools. Otherwise the gate is unreachable.
+      const graphTools = new Set();
+      for (const n of graph.nodes) {
+        for (const t of n.allowed_tools ?? []) graphTools.add(t);
+      }
       for (const t of graph.requires_approval) {
-        if (!allowedTools.has(t))
-          errors.push(`requires_approval references unknown tool "${t}"`);
+        if (!graphTools.has(t))
+          errors.push(`requires_approval references "${t}" which appears in no node's allowed_tools`);
       }
     }
   }

@@ -1,7 +1,7 @@
 {
-  "name": "@betterclaw/plugin-cowork",
-  "version": "0.0.1",
-  "description": "BetterClaw plugin for Anthropic Cowork (in Claude Desktop). V1 scaffold — real implementation pending Week 3 decision.",
+  "name": "@betterclaw-ai/plugin-cowork",
+  "version": "0.3.0",
+  "description": "BetterClaw plugin for Anthropic Cowork (in Claude Desktop). Enforces workflow graphs over Cowork's verified connectors via shell-command hooks.",
   "private": true,
   "type": "module",
   "engines": {

@@ -1,8 +1,8 @@
-# @betterclaw/plugin-cowork
+# @betterclaw-ai/plugin-cowork
 
 BetterClaw as an Anthropic Cowork plugin (Claude Desktop). Puts BetterClaw's compile + enforce + approval + audit primitives in front of every tool call Cowork makes.
 
-**Status:** V1 research preview. Works today with the hooks Cowork exposes (`PreToolUse`, `UserPromptSubmit`, `PostToolUse`). ADR 0001 empirically verified the SDK against BetterClaw's requirements on 2026-04-24.
+**Status:** v0.3.0. Works today with the hooks Cowork exposes (`PreToolUse`, `UserPromptSubmit`, `PostToolUse`). ADR 0001 empirically verified the SDK against BetterClaw's hook requirements on 2026-04-24; ADR 0002's Phase 0 spike (2026-04-26) verified the deferred-tool / `mcp__claude_ai_*` matcher behavior.
 
 ## How it works
 
@@ -25,7 +25,7 @@ BetterClaw as an Anthropic Cowork plugin (Claude Desktop). Puts BetterClaw's com
               ▼
 ┌──────────────────────────────────────────┐
 │ betterclaw hook <event>                  │  reads JSON from stdin,
-│ (shipped in @betterclaw/cli)             │  runs enforcement,
+│ (shipped in @betterclaw-ai/cli)             │  runs enforcement,
 │                                          │  writes response JSON to stdout
 └──────────────────────────────────────────┘
               │
@@ -44,7 +44,7 @@ Hook dispatch latency: ~100-150ms per invocation (Node cold start for the CLI). 
 Prereqs:
 
 - Claude Desktop (latest) with Cowork enabled
-- `@betterclaw/cli` on PATH — `npm install -g @betterclaw/cli` OR clone the BetterClaw repo and `ln -sf $PWD/packages/cli/bin/betterclaw ~/.local/bin/betterclaw`
+- `@betterclaw-ai/cli` on PATH — `npm install -g @betterclaw-ai/cli` OR clone the BetterClaw repo and `ln -sf $PWD/packages/cli/bin/betterclaw ~/.local/bin/betterclaw`
 
 Install the plugin via Claude Desktop's plugin manager (Settings → Plugins → Install from directory) and point it at `packages/plugin-cowork/`. Or for local development:
 
@@ -97,7 +97,7 @@ V1: no-op (returns `{}`). Telemetry for tool-completion timing is already captur
 
 ## Not yet implemented (V1 scope boundaries)
 
-- **Built-in Cowork tool enforcement** (Bash, Write, Read, etc.) — V1 only enforces graphs against tools matching a BetterClaw vertical. V2 adds per-vertical allowlists for built-ins.
+- **Built-in Cowork tool enforcement** (Bash, Write, Read, etc.) — V1 enforces over the tool names listed in the active graph. Built-in Claude Desktop tools are out of scope unless they appear in a graph node's allowed_tools. V2 may add an explicit "always-on built-in deny list" for safety.
 - **Dry-run mode** — V2. Replay a graph against historical data without side effects.
 - **Per-tenant identity in Cowork** — tied to the paid-cloud backend, gated on Week 3 validation.
 - **`permissionDecision: "defer"`** — Open Question from ADR 0001. TypeScript-SDK-listed but not verified for shell-command plugin hooks. V1 uses `"deny"` + user-facing instructions to approve; behaviorally equivalent for sync approval flows.
@@ -105,6 +105,8 @@ V1: no-op (returns `{}`). Telemetry for tool-completion timing is already captur
 ## Related
 
 - [ADR 0001 — Cowork plugin SDK feasibility](../../docs/adrs/0001-cowork-sdk-feasibility.md) — the verification that green-lit this package.
+- [ADR 0002 — Enforcement layer, not vertical bundler](../../docs/adrs/0002-enforcement-layer-not-vertical-bundler.md) — the v0.3 architectural shift.
 - [`spikes/cowork-hook-verify/`](../../spikes/cowork-hook-verify/) — the minimal probe plugin used to validate hook wire behavior. Useful when debugging.
-- [`@betterclaw/cli`](../cli/) — provides the `betterclaw` CLI this shim calls.
+- [`spikes/cowork-tool-discovery/`](../../spikes/cowork-tool-discovery/) — the Phase 0 spike that verified the `mcp__claude_ai_*` matcher behavior + ToolSearch enumeration mechanism.
+- [`@betterclaw-ai/cli`](../cli/) — provides the `betterclaw` CLI this shim calls.
 - [`betterclaw` (plugin-openclaw)](../plugin-openclaw/) — the sibling plugin for OpenClaw users. Same enforcement, different host runtime.

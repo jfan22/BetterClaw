@@ -25,7 +25,7 @@ fi
 
 if ! command -v betterclaw > /dev/null 2>&1; then
   echo "[betterclaw-cowork] \`betterclaw\` CLI not on PATH." >&2
-  echo "[betterclaw-cowork] Install: \`npm install -g @betterclaw/cli\` or symlink from your BetterClaw repo." >&2
+  echo "[betterclaw-cowork] Install: \`npm install -g @betterclaw-ai/cli\` or symlink from your BetterClaw repo." >&2
   # Allow by default so the user isn't blocked from using Cowork entirely.
   echo "{}"
   exit 0

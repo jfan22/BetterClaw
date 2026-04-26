@@ -1,5 +1,5 @@
 {
-  "name": "@betterclaw/contracts",
+  "name": "@betterclaw-ai/contracts",
   "version": "0.0.1",
   "description": "Shared type definitions and wire protocol schemas between the BetterClaw plugin, CLI, and (future) paid cloud backend.",
   "private": true,

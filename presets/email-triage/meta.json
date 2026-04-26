@@ -1,7 +1,6 @@
 {
   "name": "email-triage",
-  "vertical": "email",
-  "description": "Inbox triage with approval gate on drafts. Reads inbox, classifies each email, drafts replies for customer questions (you approve each one).",
+  "description": "Inbox triage with approval gate on drafts. Reads inbox, classifies each email, drafts replies for customer questions (you approve each one). Uses BetterClaw's bundled Gmail integration (gmail_search/read/draft) — for OpenClaw users without Cowork. Cowork users should compile their own Gmail-triage paragraph instead; the host's verified Gmail connector is a better fit than this preset.",
   "example_agent_message": "Triage my inbox. Search in:inbox maxResults=5, then for each read it and decide: newsletter (skip), investor (flag), or customer question (draft reply).",
-  "requires": ["Gmail vertical setup — see QUICKSTART.md §4"]
+  "requires": ["betterclaw connect gmail (one-time setup)"]
 }

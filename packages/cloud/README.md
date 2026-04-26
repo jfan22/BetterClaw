@@ -1,4 +1,4 @@
-# @betterclaw/cloud
+# @betterclaw-ai/cloud
 
 **Status:** V1 scaffold. Implementation gated on Week 3 decision.
 
@@ -15,7 +15,7 @@ This package will hold BetterClaw's paid cloud backend:
 
 Per the CEO plan's Week 3 gate, no expensive cloud backend work starts until combined telemetry + interview signal validates the wedge. Writing code here before that signal exists is premature — it costs weeks of CC time that could be wasted if the V1 persona doesn't concentrate around the enterprise use case.
 
-The monorepo scaffold exists early so that (a) shared types (`@betterclaw/contracts`) can land without a second repo reorg, and (b) when signal arrives, implementation starts in a clean workspace with the right structure.
+The monorepo scaffold exists early so that (a) shared types (`@betterclaw-ai/contracts`) can land without a second repo reorg, and (b) when signal arrives, implementation starts in a clean workspace with the right structure.
 
 ## Planned structure (when we build it)
 
