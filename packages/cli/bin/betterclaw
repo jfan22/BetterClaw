@@ -279,7 +279,7 @@ function emitTelemetry(event, properties = {}, { source = "cli" } = {}) {
 // `~/.betterclaw/telemetry.json` { "feedback_url": "..." } or the
 // BETTERCLAW_FEEDBACK_URL env var. Maintainer should replace this with a real
 // URL (cal.com, a mailto:, a typeform) before publishing to npm.
-const DEFAULT_FEEDBACK_URL = "https://cal.com/betterclaw/chat";
+const DEFAULT_FEEDBACK_URL = "https://calendar.app.google/Lq7uHv8cpr7GfPJV7";
 
 // Day-3 post-install CTA. Fires on `compile`, `run`, `start` — moments when
 // the user has just asked BetterClaw to do something useful, not during
