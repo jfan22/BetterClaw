@@ -1,5 +1,4 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -75,52 +74,36 @@ function readRecentHistory() {
   }
 }
 
-const MEMORY_PATH = path.join(os.homedir(), ".openclaw", "workspace", "MEMORY.md");
-const MEMORY_MARKER_BEGIN = "<!-- BEGIN betterclaw:recent_approvals -->";
-const MEMORY_MARKER_END = "<!-- END betterclaw:recent_approvals -->";
-
-// Write our "recent approvals" block into ~/.openclaw/workspace/MEMORY.md,
-// which OpenClaw's CLI backend auto-loads into the agent's prompt context
-// on every turn. Preserves any user-owned content outside our markers.
-// If history is empty, strips our section (leaves other content alone).
-function syncRecentApprovalsToMemoryFile() {
+// One-shot cleanup of the v0.2.0 MEMORY.md cross-turn-history workaround.
+// v0.2.0 wrote recent-approval blocks into ~/.openclaw/workspace/MEMORY.md
+// because OpenClaw's CLI-backend path didn't fire `before_prompt_build` on
+// plugin tools. Upstream openclaw@2026.4.24 (PR #70625) fixed that, so we now
+// register the hook natively and never touch MEMORY.md. This function strips
+// any leftover BetterClaw block on plugin boot so the upgrade is invisible
+// — if MEMORY.md doesn't have our block it's a fast no-op.
+//
+// Removable in a future release once we're confident no v0.2.0 installs are
+// in active use (likely v0.3.x once telemetry shows < 5% v0.2.0 footprint).
+function removeLegacyMemoryBlock() {
+  const memoryPath = path.join(os.homedir(), ".openclaw", "workspace", "MEMORY.md");
+  const begin = "<!-- BEGIN betterclaw:recent_approvals -->";
+  const end = "<!-- END betterclaw:recent_approvals -->";
   try {
-    fs.mkdirSync(path.dirname(MEMORY_PATH), { recursive: true });
-    const existing = fs.existsSync(MEMORY_PATH) ? fs.readFileSync(MEMORY_PATH, "utf8") : "";
-    const events = readRecentHistory();
-    const block = formatHistoryForAgent(events);
-
-    // Strip any prior betterclaw block (idempotent).
-    const beginIdx = existing.indexOf(MEMORY_MARKER_BEGIN);
-    const endIdx = existing.indexOf(MEMORY_MARKER_END);
-    let preserved = existing;
-    if (beginIdx !== -1 && endIdx !== -1 && endIdx > beginIdx) {
-      preserved = (existing.slice(0, beginIdx) + existing.slice(endIdx + MEMORY_MARKER_END.length))
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
-    }
-
-    let next;
-    if (block) {
-      const section = [MEMORY_MARKER_BEGIN, "", block, "", MEMORY_MARKER_END].join("\n");
-      next = preserved ? `${section}\n\n${preserved}\n` : `${section}\n`;
+    if (!fs.existsSync(memoryPath)) return;
+    const existing = fs.readFileSync(memoryPath, "utf8");
+    const beginIdx = existing.indexOf(begin);
+    const endIdx = existing.indexOf(end);
+    if (beginIdx === -1 || endIdx === -1 || endIdx <= beginIdx) return;
+    const cleaned = (existing.slice(0, beginIdx) + existing.slice(endIdx + end.length))
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    if (cleaned.length === 0) {
+      try { fs.unlinkSync(memoryPath); } catch {}
     } else {
-      next = preserved ? `${preserved}\n` : "";
+      fs.writeFileSync(memoryPath, cleaned + "\n");
     }
-
-    if (next.length === 0) {
-      // Nothing to write, nothing user-owned — remove the file if we created it earlier.
-      if (existing && existing.trim() === "") {
-        try { fs.unlinkSync(MEMORY_PATH); } catch {}
-      }
-      return;
-    }
-    fs.writeFileSync(MEMORY_PATH, next);
-    process.stderr.write(
-      `[HISTORY] synced ${events.length} recent approval event(s) to ${MEMORY_PATH}\n`,
-    );
-  } catch (err) {
-    process.stderr.write(`[HISTORY] sync failed: ${String(err)}\n`);
+  } catch {
+    // Best-effort cleanup; failure is harmless.
   }
 }
 
@@ -147,31 +130,6 @@ function formatHistoryForAgent(events) {
     lines.push(`- ${when} · ${e.tool} · ${verdict}${hint}${detail ? " — " + detail : ""}`);
   }
   return lines.join("\n");
-}
-
-function wrapExecuteWithHook(toolName, realExecute) {
-  return async (toolCallId, params, signal, onUpdate) => {
-    const runner = getGlobalHookRunner();
-    let adjustedParams = params;
-    if (runner?.hasHooks("before_tool_call")) {
-      const event = { toolName, params: params ?? {}, toolCallId };
-      const ctx = { toolName };
-      const outcome = await runner.runBeforeToolCall(event, ctx);
-      if (outcome?.block) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: outcome.blockReason || "Tool call blocked by workflow enforcement.",
-            },
-          ],
-          isError: true,
-        };
-      }
-      if (outcome?.params) adjustedParams = outcome.params;
-    }
-    return realExecute(toolCallId, adjustedParams, signal, onUpdate);
-  };
 }
 
 export default definePluginEntry({
@@ -208,6 +166,9 @@ export default definePluginEntry({
 
     const approvalsDir = resolveApprovalsDir(pluginRoot);
     try { fs.mkdirSync(approvalsDir, { recursive: true }); } catch {}
+
+    // One-shot upgrade cleanup: strip the v0.2.0 MEMORY.md block if present.
+    removeLegacyMemoryBlock();
 
     // Determine which tool name prefixes are "ours" (belong to the active
     // vertical) so we only enforce on those.
@@ -323,40 +284,32 @@ export default definePluginEntry({
       return { params: result.params };
     });
 
-    // v0.3: surface out-of-band dispatch outcomes to the agent at the start
-    // of every turn. Closes the "agent doesn't see the approved draft"
-    // UX gap: when the CLI's `betterclaw approve` dispatches a draft via
-    // Gmail MCP, the agent that originally requested it is long gone.
+    // Surface out-of-band dispatch outcomes to the agent at the start of
+    // every turn. Closes the "agent doesn't see the approved draft" UX gap:
+    // when the CLI's `betterclaw approve` dispatches a draft via Gmail MCP,
+    // the agent that originally requested it is long gone — the next turn's
+    // agent needs to know what's already been handled so it doesn't re-attempt.
     //
-    // Implementation: we'd prefer api.on("before_prompt_build", ...), but
-    // that hook doesn't fire in the `openclaw agent --local` cli-runner
-    // path (same OpenClaw gap as before_tool_call — runBeforePromptBuild is
-    // only invoked from pi-embedded-runner). Workaround: write our history
-    // block into the workspace's MEMORY.md, which OpenClaw's CLI backend
-    // auto-loads into the agent's bootstrap context. Bounded file (fixed
-    // allowlist of names in workspace.ts), so we don't pollute unexpected
-    // paths. Any user-owned content outside our markers is preserved.
-    syncRecentApprovalsToMemoryFile();
+    // Native `before_prompt_build` hook (openclaw>=2026.4.24, PR #70625).
+    // Returns { prependContext } which OpenClaw splices into the system
+    // prompt for the next turn.
     api.on("before_prompt_build", () => {
-      // Dead weight in the current cli-runner path, but leave it wired so
-      // it activates automatically if the user runs the Pi embedded agent
-      // (which DOES fire before_prompt_build) or when OpenClaw's CLI
-      // backend eventually grows support for plugin-provided prompt
-      // mutations.
       const events = readRecentHistory();
       const block = formatHistoryForAgent(events);
       if (!block) return;
       return { prependContext: block };
     });
 
-    // Register only the tools for the active vertical. Each execute is
-    // wrapped so the before_tool_call hook above actually fires.
+    // Register the active vertical's tools. Enforcement happens via the
+    // `before_tool_call` hook registered above — OpenClaw fires it natively
+    // for plugin-served tools as of 2026.4.24 (PR #71159), so each tool's
+    // execute function runs as-is.
     for (const tool of vertical.tools) {
       api.registerTool({
         name: tool.name,
         description: tool.description,
         parameters: tool.parameters,
-        execute: wrapExecuteWithHook(tool.name, tool.execute),
+        execute: tool.execute,
       });
     }
   },

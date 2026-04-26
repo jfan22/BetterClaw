@@ -1,6 +1,6 @@
 {
   "name": "@betterclaw/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "BetterClaw CLI — compile paragraphs into workflow graphs, manage approvals, run the Gmail MCP proxy daemon.",
   "license": "Apache-2.0",
   "author": "BetterClaw contributors",

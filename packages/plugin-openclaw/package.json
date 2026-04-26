@@ -1,6 +1,6 @@
 {
   "name": "betterclaw",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Workflow-enforcement plugin for OpenClaw — snaps agents back when they try to step outside their declared workflow.",
   "license": "Apache-2.0",
   "author": "BetterClaw contributors",
@@ -38,12 +38,12 @@
   "openclaw": {
     "extensions": ["./index.mjs"],
     "compat": {
-      "pluginApi": ">=2026.3.24-beta.2",
-      "minGatewayVersion": "2026.3.24-beta.2"
+      "pluginApi": ">=2026.4.24",
+      "minGatewayVersion": "2026.4.24"
     },
     "build": {
-      "openclawVersion": "2026.4.15",
-      "pluginSdkVersion": "2026.4.15"
+      "openclawVersion": "2026.4.24",
+      "pluginSdkVersion": "2026.4.24"
     }
   },
   "dependencies": {

@@ -4,6 +4,37 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.2.1] — 2026-04-25
+
+**Theme:** drop the v0.2.0 workarounds now that upstream OpenClaw caught up. Plugin shrinks ~50 LOC, gets cleaner native hook semantics.
+
+### Changed
+
+- **Native `before_tool_call` hook.** Plugin no longer manually wraps every tool's `execute` function via `wrapExecuteWithHook`. Now relies on OpenClaw firing the hook natively for plugin-served tools, fixed upstream in [openclaw 2026.4.24 PR #71159](https://github.com/openclaw/openclaw/pull/71159) (also added owner-only tool policy as a bonus security boundary on the loopback MCP).
+- **Native `before_prompt_build` hook.** Cross-turn approval surfacing no longer goes through `~/.openclaw/workspace/MEMORY.md`. Now returns `{ prependContext }` from the hook directly, fixed upstream in [openclaw 2026.4.24 PR #70625](https://github.com/openclaw/openclaw/pull/70625).
+- **`openclaw.plugin.json` compat bumped** from `>=2026.3.24-beta.2` to `>=2026.4.24`. Users on older OpenClaw should pin to `betterclaw@0.2.0` or upgrade their OpenClaw install.
+
+### Removed
+
+- `wrapExecuteWithHook` function in `packages/plugin-openclaw/index.mjs` (~25 LOC) and the `getGlobalHookRunner` import.
+- `syncRecentApprovalsToMemoryFile` function (~50 LOC) and the `MEMORY_PATH` / `MEMORY_MARKER_*` constants.
+
+### Added
+
+- One-shot upgrade cleanup: on first plugin boot of v0.2.1, `removeLegacyMemoryBlock()` strips any leftover `<!-- BEGIN betterclaw:recent_approvals -->` block from `~/.openclaw/workspace/MEMORY.md`. Idempotent — once cleaned, it's a fast no-op. Will be removed in a future release once telemetry shows v0.2.0 footprint is below 5%.
+
+### Migration notes
+
+Upgrading from v0.2.0:
+
+1. `npm install -g openclaw@latest` (must be ≥ 2026.4.24)
+2. `npm install -g @betterclaw/cli@0.2.1` (CLI version-bumped for parity, no functional changes)
+3. Reinstall the plugin so the new compat is read: `openclaw plugins install $PWD/packages/plugin-openclaw --link`
+4. Restart the daemon: `betterclaw stop && betterclaw start`
+5. Run any agent — the plugin's first boot strips the legacy MEMORY.md block silently.
+
+Behaviorally identical to v0.2.0. Hooks fire faster (no manual wrap layer), MEMORY.md no longer mutated.
+
 ## [0.2.0] — 2026-04-24
 
 **Theme:** Monorepo scaffold + Gmail MCP migrates to a daemon. This is the V1 distribution-readiness release: the plugin no longer requires the `--dangerously-force-unsafe-install` flag, and the codebase is now structured for multi-package publishing.
