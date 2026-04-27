@@ -25,7 +25,7 @@ import path from "node:path";
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const PLUGIN_VERSION = "0.3.8";
+const PLUGIN_VERSION = "0.3.9";
 
 let _cachedIdentity = null;
 let _cachedConfig = null;

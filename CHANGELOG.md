@@ -4,6 +4,26 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.9] — 2026-04-27
+
+**Theme:** the actual root cause behind v0.3.4-v0.3.8's browser-open saga.
+
+### Fixed
+
+- **Browser auto-open on Windows.** All five previous attempts (v0.3.4 through v0.3.8) were debugging the wrong layer. The CLI had a Linux-only headless heuristic — `headless = !DISPLAY && !BROWSER` — that always evaluated `true` on Windows (because `DISPLAY` is never set on Windows; X11 isn't native to Windows). Result: on Windows the CLI took the "headless, print Mermaid as text" branch and never called `openInBrowser` at all. Each browser-launching fix was correct in isolation but never being reached.
+
+  Why Git Bash worked anyway: Git Bash on Windows often sets `DISPLAY` for X11 GUI forwarding (xterm support), so headless evaluated `false` in Git Bash → openInBrowser ran → browser opened. PowerShell never sets `DISPLAY` → headless guard fired → no browser-open attempt at all.
+
+  Fix: new `isHeadless()` helper that's platform-aware. Linux respects DISPLAY/BROWSER. Windows and macOS default to non-headless (desktop always available). Override with `BETTERCLAW_HEADLESS=1` for explicit control (CI, scripted compile flows).
+
+### Added
+
+- `BETTERCLAW_HEADLESS` env var. Set to `1` to force headless mode regardless of platform — the CLI prints Mermaid source as text instead of opening a browser. Useful for CI pipelines and scripted compile flows.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.9 @betterclaw-ai/plugin-openclaw@0.3.9`. No state migration needed.
+
 ## [0.3.8] — 2026-04-27
 
 **Theme:** browser auto-open, take 5 — give up on rolling our own, use the `open` package.
