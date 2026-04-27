@@ -4,6 +4,18 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.7] — 2026-04-27
+
+**Theme:** browser auto-open take 4 — give up on shell tricks, use explorer.exe directly.
+
+### Fixed
+
+- **Browser auto-open in PowerShell + Git Bash + CMD on Windows.** Three previous attempts (`cmd /c start`, `shell: true`, `powershell.exe -EncodedCommand`) each had quirks across different calling shells. v0.3.7 takes the simplest possible approach: spawn `explorer.exe <target>` directly. explorer.exe is always at `C:\Windows\explorer.exe` (on PATH on every Windows install), opens any file via its default-app association (.html → default browser), and doesn't go through any shell — so no detachment quirks, no encoding issues, no execution-policy edge cases. The exit code is documented to be 1 even on success ([Stack Overflow](https://stackoverflow.com/questions/9356985)) so we ignore status.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.7 @betterclaw-ai/plugin-openclaw@0.3.7`. No state migration needed.
+
 ## [0.3.6] — 2026-04-27
 
 **Theme:** browser auto-open take 3 — works in PowerShell now via `powershell.exe -EncodedCommand`.

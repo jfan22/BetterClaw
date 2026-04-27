@@ -73,35 +73,28 @@ function winSafeArg(s) {
 }
 
 // Cross-platform "open in default browser" (or default app for the URL/file).
-// Detached so the browser window survives our process exit. Stdout/stderr
-// silenced because none of these openers are our concern after launch.
 //
-// On Windows, we invoke powershell.exe with -EncodedCommand to call
-// Start-Process. This is the same approach used by the popular `open` npm
-// package and works reliably across calling shells (PowerShell, CMD, Git
-// Bash, WSL) because:
-//   1. powershell.exe is at a stable system path on every Windows install
-//   2. Start-Process is the canonical Windows file-open primitive
-//   3. -EncodedCommand (base64 UTF-16LE) sidesteps all shell-quoting
-//      issues by passing the command opaquely — paths with spaces, quotes,
-//      special chars all survive intact
+// On Windows, we invoke explorer.exe with the target path as an arg.
+// explorer.exe at C:\Windows\explorer.exe (always on PATH) opens any file
+// using its registered default-app association — for .html that's the
+// default browser. No shell, no encoding tricks, no detach quirks.
 //
-// Earlier attempts (cmd /c start with various invocations) worked from
-// some shells but not others due to PowerShell's child-process detachment
-// quirks. Direct powershell.exe invocation removes the calling-shell
-// dependency.
+// Earlier approaches (`cmd /c start ""`, `powershell.exe -EncodedCommand`)
+// worked from some calling shells but not others due to either child-
+// process detachment quirks or PowerShell execution policy edge cases.
+// explorer.exe sidesteps both because it's a native Windows app launched
+// directly without going through any shell.
+//
+// explorer.exe is documented to return exit code 1 even on success
+// (https://stackoverflow.com/questions/9356985); we use spawnSync to
+// invoke it but ignore the status. The command being issued is what
+// matters.
 function openInBrowser(target) {
   try {
     if (process.platform === "darwin") {
       spawn("open", [target], { stdio: "ignore", detached: true }).unref();
     } else if (IS_WINDOWS) {
-      const psCommand = `Start-Process -FilePath ${JSON.stringify(String(target))}`;
-      const encoded = Buffer.from(psCommand, "utf16le").toString("base64");
-      spawn("powershell.exe", [
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-EncodedCommand", encoded,
-      ], { stdio: "ignore", detached: true }).unref();
+      spawnSync("explorer.exe", [String(target)], { stdio: "ignore" });
     } else {
       spawn("xdg-open", [target], { stdio: "ignore", detached: true }).unref();
     }
@@ -170,7 +163,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.6";
+const BETTERCLAW_VERSION = "0.3.7";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
