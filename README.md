@@ -17,17 +17,40 @@ npm install -g @betterclaw-ai/cli @betterclaw-ai/plugin-openclaw @betterclaw-ai/
 
 Works on Linux, macOS, and Windows. See [QUICKSTART.md](./QUICKSTART.md) for the full setup including Claude Desktop / OpenClaw integration.
 
+## Who is this for today?
+
+**v0.3 is for individuals and small teams building AI agents on Claude-native runtimes** — Claude Code, Claude Desktop, the Claude Agent SDK. Concretely:
+
+- Developers running Claude Code on their own infra and want to stop the agent from `rm -rf`-ing prod
+- Internal-tool builders giving Claude access to write paths (databases, payment APIs, customer comms) and want approval gates on irreversible actions
+- Small teams sharing AI workflows where "what did the agent do?" needs an answer that isn't a chat-log scroll
+- Researchers and analysts running batch Claude pipelines and wanting deviation alarms
+
+If you're on a closed SaaS support product (Ada, Intercom Fin, Zendesk AI, Cresta) or a non-Claude framework (LangGraph, CrewAI, OpenAI Agent SDK), v0.3 doesn't enforce your runtime today — see [ROADMAP.md](./ROADMAP.md) for what's planned.
+
+If you're at an enterprise looking for SOC2-style multi-user audit, SAML SSO, or compliance certifications: those land in V2's paid cloud tier (gated on V1 signal). v0.3 is the local-first foundation those scale up from, not the enterprise product itself.
+
 ## Why is this useful?
 
-Three reasons: **compliance**, **security**, and **tracking**.
+Three reasons: **safety**, **recovery**, and **audit**.
 
-**Compliance.** Enterprises often require specific workflows for regulatory or audit reasons — "the agent must route every refund over $500 to finance, every legal redline to counsel, every customer-data export to the DPO." A declared workflow makes that requirement enforceable instead of aspirational. Auditors get exportable evidence; the agent can't quietly drift.
+**Safety.** System prompts are advisory ("don't send emails over $500") but the LLM can ignore them when other instructions push back ("be helpful"). BetterClaw turns the rule into a *runtime gate*: the tool call literally doesn't dispatch unless the workflow allows it. Agents running inside a declared workflow can't be hijacked into unintended actions by prompt injection, hostile content, or just over-helpful chat behavior — the compromised input has a bounded blast radius.
 
-**Security.** Agents that run within a declared workflow can't be hijacked into unintended actions by malicious inputs (prompt injection, supply-chain prompts, hostile email content, manipulated retrieval). Anything outside the graph is blocked and flagged, so a compromised input has a bounded blast radius.
+**Recovery.** When the agent tries something outside the graph, BetterClaw doesn't just block — it surfaces a deviation message that names the allowed alternatives. The agent reads it, picks a valid tool, and continues. This isn't theoretical; you can see it happen live in the [Live evidence](#live-evidence-this-isnt-theoretical) section below.
 
-**Tracking.** A persistent audit log records every tool call — allowed, blocked, approved, denied — so reviewers can answer "what did the agent do this week?" without reading transcripts. Behavior outside the graph is especially visible, and approvals carry the approver's identity for downstream investigation.
+**Audit.** A local JSONL log records every tool call — allowed, blocked, approved, denied — with timestamps and params. You can answer "what did the agent do at 3am?" without reading transcripts. At individual scale this is a personal receipt. At team scale (V2) it'll be hash-chained, multi-user, and compliance-exportable; at v0.3 it's local-only.
 
-## Walkthrough: preventing an unauthorized discount
+## Concrete example (today): Claude Code touching production
+
+You wrote a Claude Code agent that ingests cron logs, decides which alerts to escalate, and posts to Slack. It also has access to your Postgres MCP server because some triage requires reading recent rows. One day the agent decides the cleanest fix for a stale-data alert is `DELETE FROM events WHERE ts < NOW() - INTERVAL '30 days'`. It executes. You discover this Monday morning when the dashboard breaks.
+
+`betterclaw "investigate alert backlog: read the alerting cron logs, query recent events for context, summarize the top 3 issues, post to #ops-triage. NEVER write to the database; ask me before posting any message that names a customer."` compiles to a graph where the only Postgres tool allowed is `read_rows`, the Slack `post_message` tool requires approval if the message contains `customer_id`, and writes to the database appear in NO node's allowed_tools. Now the agent CAN'T accidentally delete; the runtime literally refuses the call. Same agent, same prompt, just won't do the bad thing.
+
+This is the addressable v0.3 use case: a developer with a Claude-based agent who wants to bound its blast radius. ~5 minutes to set up. No procurement, no SOC2, no IT review — `npm install -g`, write a paragraph, the gate is live.
+
+## Walkthrough: preventing an unauthorized discount (what BetterClaw scales to)
+
+The use case below is what teams ask BetterClaw to do at scale, *if* they're building their CX agent on a Claude-native runtime. Today this means a CX team building a NEW agent on Claude Code / Desktop / Agent SDK — not retrofitting an Ada or Intercom Fin deployment, which BetterClaw can't currently host. We include this walkthrough because the underlying mechanics (compile, approval gates, audit log) work the same at any scale; the multi-user routing, hash-chained audit log, and compliance-exportable receipts that the enterprise version of this story needs ship in V2's cloud tier, gated on V1 signal.
 
 It's a Tuesday afternoon. A customer DMs your AI support agent — built on Claude Code, Claude Desktop, or Claude Agent SDK — about a late shipment. The agent, trying to be helpful, offers a 20% discount on their next order. The customer screenshots the offer and posts it to Reddit. Within an hour, three more customers ask "where's MY 20%?" Finance asks why margin dropped this week. You discover the policy was supposed to be **max 10% goodwill credit; anything over requires manager approval** — but nothing technically enforces that on the AI. The system prompt said it. The agent ignored it. You have no audit trail of why it picked 20%.
 
@@ -265,4 +288,10 @@ Distribution is GitHub gists, not a custom platform. Git handles versioning; Git
 
 ## What's next
 
-See [ROADMAP.md](./ROADMAP.md) for planned work — multi-user approval routing, paid cloud backend (audit log + SSO + compliance export), more host integrations, dry-run mode. Open an issue if you want to influence priority.
+v0.3 is the local-first foundation. The roadmap layers on:
+
+- **More runtime adapters** — LangGraph and Claude Agent SDK first; CrewAI, OpenAI Agent SDK, and Hermes after. Each opens a chunk of the agent ecosystem currently outside our reach.
+- **Cloud tier** — multi-user audit log with hash-chain integrity, SSO via WorkOS, compliance export. This is what makes BetterClaw an answer for enterprise compliance/risk/CX teams (vs the current local-first individual-and-small-team product). Gated on V1 signal that customers want to pay for it.
+- **Dry-run mode, marketplace, UX polish** — secondary investments after the core wedge validates.
+
+See [ROADMAP.md](./ROADMAP.md) for the full list. Open an issue if your use case isn't covered today and you want to influence priority — that signal directly determines what ships next.
