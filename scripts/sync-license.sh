@@ -14,6 +14,7 @@ cd "$(git rev-parse --show-toplevel)"
 PUBLISHABLE_PACKAGES=(
   "packages/cli"
   "packages/plugin-openclaw"
+  "packages/plugin-cowork"
 )
 
 for pkg in "${PUBLISHABLE_PACKAGES[@]}"; do
