@@ -1,6 +1,6 @@
 {
   "name": "@betterclaw-ai/plugin-openclaw",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Workflow-enforcement layer for OpenClaw — gates AI agent tool calls against a declarative graph. Tools come from the host environment (Cowork connectors or user-installed MCP servers).",
   "license": "Apache-2.0",
   "author": "BetterClaw contributors",

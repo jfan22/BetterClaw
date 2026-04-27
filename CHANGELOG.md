@@ -4,6 +4,20 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.5] — 2026-04-27
+
+**Theme:** browser auto-open take 2 + relax over-strict graph validation.
+
+### Fixed
+
+- **Browser auto-open on Windows.** v0.3.4's `spawn("cmd", ["/c", "start", "", target])` didn't work in Git Bash + Node combinations because of msys2 path-translation interactions. v0.3.5 uses `spawn(\`start "" "..."\`, [], { shell: true })` instead — `shell: true` forces invocation through cmd.exe, which always handles `start` (a cmd.exe builtin) correctly regardless of the calling shell.
+
+- **Relaxed graph validation: empty `allowed_tools` is allowed for any node.** Previously only the `unrecognized_action` sentinel could have empty tools; this rejected legitimate workflows where a node represents a pure-LLM-thinking step (summarize, classify, decide-which-branch). The agent produces text in such states and advances by calling a tool from a reachable next node — semantically valid; the validation was over-strict. Compile prompt updated to match: rule 2 now explicitly allows empty `allowed_tools` for analytical/thinking nodes.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.5 @betterclaw-ai/plugin-openclaw@0.3.5`. No state migration needed.
+
 ## [0.3.4] — 2026-04-27
 
 **Theme:** browser auto-open works on Windows now.

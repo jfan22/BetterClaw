@@ -80,11 +80,16 @@ function openInBrowser(target) {
     if (process.platform === "darwin") {
       spawn("open", [target], { stdio: "ignore", detached: true }).unref();
     } else if (IS_WINDOWS) {
-      // `start` is a cmd.exe builtin (not an external binary), so we go
-      // through cmd /c. The empty "" is the optional `start` title arg —
-      // required when the path may contain spaces, otherwise cmd treats
-      // the quoted path AS the title and silently does nothing.
-      spawn("cmd", ["/c", "start", "", target], { stdio: "ignore", detached: true }).unref();
+      // shell: true forces invocation through cmd.exe, where `start` is a
+      // builtin. The empty "" is `start`'s title arg (required when the
+      // path may contain spaces). Without shell:true, plain `spawn("cmd",
+      // ["/c", ...])` doesn't always work in Git Bash + Node combinations
+      // because of msys2 path-translation gotchas.
+      spawn(`start "" "${String(target).replace(/"/g, '\\"')}"`, [], {
+        stdio: "ignore",
+        detached: true,
+        shell: true,
+      }).unref();
     } else {
       spawn("xdg-open", [target], { stdio: "ignore", detached: true }).unref();
     }
@@ -153,7 +158,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.4";
+const BETTERCLAW_VERSION = "0.3.5";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -3590,7 +3595,7 @@ CRITICAL — approval gate placement: when the user asks for approval before an 
 
 RULES:
 1. Keep the graph small: 2 to 5 nodes.
-2. Every node's allowed_tools must actually perform that node's purpose. If the node's purpose is to SEND, the tool must be a send action (e.g. send_email, send_message, post_message). If DELETE, the tool must be a delete action. Do NOT substitute a safer/more-conservative draft/preview tool for a node whose purpose is the irreversible action — runtime will surface unknown tool names with a clear error if you guess wrong, which is fine.
+2. Every node's allowed_tools must actually perform that node's purpose. If the node's purpose is to SEND, the tool must be a send action (e.g. send_email, send_message, post_message). If DELETE, the tool must be a delete action. Do NOT substitute a safer/more-conservative draft/preview tool for a node whose purpose is the irreversible action — runtime will surface unknown tool names with a clear error if you guess wrong, which is fine. EXCEPTION: pure-LLM-thinking nodes (summarize, classify, decide-which-branch, plan) may have allowed_tools: [] — these are analytical steps where the agent reasons over previously-fetched data without calling any external tool. The agent advances out of an empty-tools node by calling a tool from a reachable next node.
 3. Node ids: snake_case and descriptive (e.g. "search_inbox", "draft_reply", "schedule_meeting"), NOT "node1".
 4. The "purpose" field on each node must be a concrete human-readable sentence visible in the graph visualization.
 5. Return edges are conditional. For BATCH workflows (the agent processes multiple items in one run — e.g. "triage 10 emails", "compare 3 products", "process each lead"), include a return edge from the last node back to the entry or a mid-flow node so the agent can pick up the next item. For SINGLE-EVENT workflows (the agent does one thing once — e.g. "send a single email", "schedule one meeting", "play music when I get home"), do NOT add a return edge to entry; the workflow is acyclic and ends at the final node.
@@ -3772,9 +3777,13 @@ function validateGraph(graph) {
     if (typeof n.purpose !== "string") errors.push(`node "${n.id}" missing purpose`);
     if (!Array.isArray(n.allowed_tools)) {
       errors.push(`node "${n.id}" allowed_tools must be an array`);
-    } else if (n.allowed_tools.length === 0 && n.id !== "unrecognized_action") {
-      errors.push(`node "${n.id}" has empty allowed_tools (only the "unrecognized_action" sentinel may have []`);
     }
+    // Empty allowed_tools is permitted: it represents a pure-LLM-thinking
+    // step (summarize, classify, decide-which-branch). The agent produces
+    // text in that state and advances by calling a tool from a reachable
+    // next node. Earlier validation restricted this to the
+    // "unrecognized_action" sentinel only, but that was over-strict —
+    // legitimate workflows have analytical steps with no tool call.
     for (const t of n.allowed_tools ?? []) {
       if (typeof t !== "string" || t.length === 0)
         errors.push(`node "${n.id}" has non-string tool entry: ${JSON.stringify(t)}`);
