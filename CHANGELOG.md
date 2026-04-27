@@ -4,6 +4,20 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.2] — 2026-04-27
+
+**Theme:** fix Windows binary lookup. Cross-platform install actually works now.
+
+### Fixed
+
+- **Windows: `claude` CLI not found by `betterclaw`** even when `claude --version` works in the same shell. Root cause: Node's `spawnSync` on Windows doesn't find `.cmd` shims (which is how npm installs binaries) unless you pass `shell: true` (insecure with user-supplied args) or resolve the full path first. v0.3.2 adds a `resolveBin()` helper that resolves binaries via `where` on Windows, falls back to bare names elsewhere. Applied to all `claude`, `openclaw`, and `gh` invocations in the CLI.
+
+- **Windows-specific error guidance.** When `claude` lookup fails on Windows, the error now adds *"on Windows, run BetterClaw from Git Bash (not PowerShell or CMD)"* — the most common cause of the failure.
+
+### Migration notes
+
+Just update: `npm install -g @betterclaw-ai/cli@0.3.2 @betterclaw-ai/plugin-openclaw@0.3.2`. No state migration needed.
+
 ## [0.3.1] — 2026-04-27
 
 **Theme:** fix the path-mismatch bug that broke npm-installed CLIs on Windows (and was a workaround on Linux).

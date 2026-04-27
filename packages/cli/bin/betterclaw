@@ -46,6 +46,32 @@ const APPROVALS_DIR = path.join(BETTERCLAW_HOME, "approvals");
 // never hit this path; the constant is computed best-effort and never
 // required to exist.
 const PLUGIN_ROOT = path.resolve(REPO_ROOT, "packages", "plugin-openclaw");
+
+// Cross-platform binary lookup for spawnSync. Node's spawnSync on Windows
+// won't find `.cmd` shims (which is how npm installs binaries) unless you
+// either pass shell:true (insecure with user-supplied args) or resolve the
+// full path. This helper resolves `name` to an absolute path on Windows
+// (via `where`), falls back to the bare name elsewhere.
+//
+// Cached because resolving is a syscall and we call this for the same
+// binaries repeatedly across the CLI.
+const _resolveBinCache = new Map();
+function resolveBin(name) {
+  if (process.platform !== "win32") return name;
+  if (_resolveBinCache.has(name)) return _resolveBinCache.get(name);
+  // `where` returns one path per line; first match wins. Try the bare name
+  // (Node will check PATHEXT) plus explicit `.cmd` and `.exe` candidates.
+  for (const candidate of [name, `${name}.cmd`, `${name}.exe`]) {
+    const result = spawnSync("where", [candidate], { encoding: "utf8" });
+    if (result.status === 0 && result.stdout.trim()) {
+      const resolved = result.stdout.trim().split(/\r?\n/)[0];
+      _resolveBinCache.set(name, resolved);
+      return resolved;
+    }
+  }
+  _resolveBinCache.set(name, name); // cache the miss; spawnSync will fail later with a clearer error
+  return name;
+}
 const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
 const PRESETS_DIR = path.resolve(REPO_ROOT, "presets");
 
@@ -107,7 +133,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.1";
+const BETTERCLAW_VERSION = "0.3.2";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -912,7 +938,7 @@ if (args[0] === "run") {
   // Exec openclaw agent with the task. Leave the daemon running after exit so
   // the next `betterclaw run` is instant.
   const result = spawnSync(
-    "openclaw",
+    resolveBin("openclaw"),
     ["agent", "--local", "--agent", "main", "-m", task],
     { stdio: "inherit" },
   );
@@ -1125,7 +1151,7 @@ function runDoctor() {
   });
 
   // openclaw CLI on PATH
-  const oc = spawnSync("openclaw", ["--version"], { encoding: "utf8" });
+  const oc = spawnSync(resolveBin("openclaw"), ["--version"], { encoding: "utf8" });
   checks.push({
     name: "openclaw CLI installed",
     ok: oc.status === 0,
@@ -1134,7 +1160,7 @@ function runDoctor() {
   });
 
   // BetterClaw plugin loaded
-  const inspect = spawnSync("openclaw", ["plugins", "inspect", "betterclaw"], { encoding: "utf8" });
+  const inspect = spawnSync(resolveBin("openclaw"), ["plugins", "inspect", "betterclaw"], { encoding: "utf8" });
   const pluginOk = inspect.status === 0 && /Status:\s*loaded/.test(inspect.stdout);
   checks.push({
     name: "BetterClaw plugin loaded",
@@ -1220,7 +1246,7 @@ function runDoctor() {
   const bundlePath = path.join(os.homedir(), ".openclaw", "extensions", "gmail-mcp");
   const bundlePresent = fs.existsSync(bundlePath);
   if (bundlePresent) {
-    const bundleStatus = spawnSync("openclaw", ["plugins", "inspect", "gmail-mcp"], { encoding: "utf8" });
+    const bundleStatus = spawnSync(resolveBin("openclaw"), ["plugins", "inspect", "gmail-mcp"], { encoding: "utf8" });
     const bundleLoaded = /Status:\s*loaded/.test(bundleStatus.stdout);
     checks.push({
       name: "Day-1 gmail-mcp bundle (should be disabled)",
@@ -1492,7 +1518,7 @@ async function forkFromUrl(source, newName) {
   } else if (/^gist:/.test(source)) {
     // Path 3: gist:<id>. Use the gh CLI if available.
     const id = source.replace(/^gist:/, "");
-    const result = spawnSync("gh", ["gist", "view", id, "--filename", "graph.json"], {
+    const result = spawnSync(resolveBin("gh"), ["gist", "view", id, "--filename", "graph.json"], {
       encoding: "utf8",
     });
     if (result.status !== 0) {
@@ -1674,7 +1700,7 @@ async function publishToRemote(name, dest) {
     console.error(`error: only --to gist is supported right now`);
     process.exit(1);
   }
-  const ghCheck = spawnSync("gh", ["--version"], { encoding: "utf8" });
+  const ghCheck = spawnSync(resolveBin("gh"), ["--version"], { encoding: "utf8" });
   if (ghCheck.status !== 0) {
     console.error(`error: \`gh\` CLI not found. Install it: https://cli.github.com/`);
     process.exit(2);
@@ -1722,7 +1748,7 @@ See \`paragraph.md\` in this gist.
     `BetterClaw workflow: ${name}`,
     ...filesToUpload,
   ];
-  const result = spawnSync("gh", ghArgs, { encoding: "utf8", stdio: ["inherit", "pipe", "pipe"] });
+  const result = spawnSync(resolveBin("gh"), ghArgs, { encoding: "utf8", stdio: ["inherit", "pipe", "pipe"] });
   if (result.status !== 0) {
     console.error(`error: gh gist create failed:`);
     console.error(result.stderr);
@@ -3501,9 +3527,12 @@ function preflightCheck() {
   // The compile path doesn't require PLUGIN_ROOT to exist — that constant only
   // matters for source-clone dev workflows. npm-installed CLIs don't have it
   // and shouldn't need it.
-  const claudeCheck = spawnSync("claude", ["--version"], { encoding: "utf8" });
+  const claudeCheck = spawnSync(resolveBin("claude"), ["--version"], { encoding: "utf8" });
   if (claudeCheck.status !== 0) {
-    console.error(`error: \`claude\` CLI not found on PATH. Install and auth first.`);
+    console.error(`error: \`claude\` CLI not found on PATH. Install: npm install -g @anthropic-ai/claude-code`);
+    if (process.platform === "win32") {
+      console.error(`note: on Windows, run BetterClaw from Git Bash (not PowerShell or CMD).`);
+    }
     process.exit(2);
   }
 }
@@ -3561,7 +3590,7 @@ JSON:`;
 
 function compileWithClaude(prompt) {
   console.log("Compiling with Claude (claude-cli, opus)...");
-  const result = spawnSync("claude", ["-p", prompt, "--output-format", "text"], {
+  const result = spawnSync(resolveBin("claude"), ["-p", prompt, "--output-format", "text"], {
     encoding: "utf8",
     maxBuffer: 10 * 1024 * 1024,
   });
