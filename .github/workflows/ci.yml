@@ -32,9 +32,16 @@ jobs:
       - name: Node syntax check — CLI
         run: node --check packages/cli/bin/betterclaw
 
-      - name: Node syntax check — plugin
+      - name: Node syntax check — plugin-openclaw
         run: |
           for f in packages/plugin-openclaw/*.mjs; do
+            echo "checking $f"
+            node --check "$f"
+          done
+
+      - name: Node syntax check — plugin-cowork
+        run: |
+          for f in packages/plugin-cowork/bin/*.mjs; do
             echo "checking $f"
             node --check "$f"
           done
@@ -42,14 +49,23 @@ jobs:
       - name: Verify CLI help runs
         run: ./packages/cli/bin/betterclaw --help > /dev/null
 
+      - name: Verify CLI version prints
+        run: ./packages/cli/bin/betterclaw --version
+
       - name: Verify doctor runs (non-zero exit is OK here — missing OpenClaw)
         run: ./packages/cli/bin/betterclaw doctor || true
 
-      - name: Dry-run publish — CLI
+      - name: Sync LICENSE + NOTICE before publish dry-runs
+        run: ./scripts/sync-license.sh
+
+      - name: Dry-run publish — @betterclaw-ai/cli
         run: pnpm --filter "@betterclaw-ai/cli" publish --dry-run --no-git-checks
 
-      - name: Dry-run publish — plugin
-        run: pnpm --filter "betterclaw" publish --dry-run --no-git-checks
+      - name: Dry-run publish — @betterclaw-ai/plugin-openclaw
+        run: pnpm --filter "@betterclaw-ai/plugin-openclaw" publish --dry-run --no-git-checks
+
+      - name: Dry-run publish — @betterclaw-ai/plugin-cowork
+        run: pnpm --filter "@betterclaw-ai/plugin-cowork" publish --dry-run --no-git-checks
 
       - name: Verify no PII vocabulary in telemetry call sites
         run: |
@@ -61,7 +77,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify plugin has no subprocess-spawn references
+      - name: Verify plugin-openclaw has no subprocess-spawn references
         run: |
           # OpenClaw's install-time scanner regex-matches on these strings.
           # Even in comments they break install. Fail CI before review.
@@ -72,7 +88,42 @@ jobs:
 
       - name: Verify LICENSE + NOTICE synced across publishable packages
         run: |
-          for pkg in packages/cli packages/plugin-openclaw; do
+          for pkg in packages/cli packages/plugin-openclaw packages/plugin-cowork; do
             diff LICENSE "$pkg/LICENSE" > /dev/null || { echo "::error::$pkg/LICENSE out of sync with root. Run ./scripts/sync-license.sh"; exit 1; }
             diff NOTICE "$pkg/NOTICE" > /dev/null || { echo "::error::$pkg/NOTICE out of sync with root. Run ./scripts/sync-license.sh"; exit 1; }
           done
+
+  # Smoke-test on Windows so we catch the platform-specific regressions that
+  # caused 11 patch versions in v0.3.x. Lighter check than the full Linux
+  # validate (no publish dry-run, no LICENSE diff) — just ensures the CLI and
+  # plugin-shim modules at least load on Windows.
+  windows-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Node syntax check — CLI
+        run: node --check packages/cli/bin/betterclaw
+      - name: Node syntax check — plugin-openclaw
+        shell: bash
+        run: |
+          for f in packages/plugin-openclaw/*.mjs; do
+            node --check "$f"
+          done
+      - name: Node syntax check — plugin-cowork
+        shell: bash
+        run: |
+          for f in packages/plugin-cowork/bin/*.mjs; do
+            node --check "$f"
+          done
+      - name: Verify CLI version prints
+        run: node packages/cli/bin/betterclaw --version
+      - name: Verify CLI help runs
+        run: node packages/cli/bin/betterclaw --help
