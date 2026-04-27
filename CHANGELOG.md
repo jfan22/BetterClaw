@@ -4,6 +4,22 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.8] — 2026-04-27
+
+**Theme:** browser auto-open, take 5 — give up on rolling our own, use the `open` package.
+
+### Fixed
+
+- **Browser auto-open in PowerShell on Windows.** Four previous attempts (`cmd /c start`, `shell: true`, `powershell.exe -EncodedCommand`, `explorer.exe`) each had different shell-specific quirks. v0.3.8 adopts the `open` npm package — battle-tested for 8+ years across thousands of Node CLIs (Vite, Storybook, npm-create-*, etc.) for exactly this kind of cross-platform / cross-shell file/URL launching. The marginal install cost (~10-15KB with transitive deps) is well worth not maintaining platform shims that fail in different ways across user environments.
+
+### Added
+
+- New runtime dep: `open` (^11.0.0). First runtime dep for the CLI; previous versions had zero deps.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.8 @betterclaw-ai/plugin-openclaw@0.3.8`. No state migration needed.
+
 ## [0.3.7] — 2026-04-27
 
 **Theme:** browser auto-open take 4 — give up on shell tricks, use explorer.exe directly.

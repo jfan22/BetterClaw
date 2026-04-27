@@ -72,35 +72,28 @@ function winSafeArg(s) {
   return `"${escaped.replace(/"/g, '\\"')}"`;
 }
 
-// Cross-platform "open in default browser" (or default app for the URL/file).
+// Cross-platform "open in default browser" (or default app for the
+// URL/file). Uses the `open` npm package, which is the de facto standard
+// for this in Node-CLI land — refined over 8+ years across thousands of
+// tools (Vite, Storybook, npm-create-*) for exactly the cross-shell /
+// cross-OS / UAC-integrity-level edge cases we kept hitting.
 //
-// On Windows, we invoke explorer.exe with the target path as an arg.
-// explorer.exe at C:\Windows\explorer.exe (always on PATH) opens any file
-// using its registered default-app association — for .html that's the
-// default browser. No shell, no encoding tricks, no detach quirks.
-//
-// Earlier approaches (`cmd /c start ""`, `powershell.exe -EncodedCommand`)
-// worked from some calling shells but not others due to either child-
-// process detachment quirks or PowerShell execution policy edge cases.
-// explorer.exe sidesteps both because it's a native Windows app launched
-// directly without going through any shell.
-//
-// explorer.exe is documented to return exit code 1 even on success
-// (https://stackoverflow.com/questions/9356985); we use spawnSync to
-// invoke it but ignore the status. The command being issued is what
-// matters.
+// We tried several no-deps approaches (`cmd /c start`, `powershell.exe
+// -EncodedCommand`, `explorer.exe`) and each worked from some shells but
+// not others. The `open` package handles this internally; the marginal
+// install cost (~10-15KB with transitive deps) is well worth not having
+// to maintain platform shims.
 function openInBrowser(target) {
-  try {
-    if (process.platform === "darwin") {
-      spawn("open", [target], { stdio: "ignore", detached: true }).unref();
-    } else if (IS_WINDOWS) {
-      spawnSync("explorer.exe", [String(target)], { stdio: "ignore" });
-    } else {
-      spawn("xdg-open", [target], { stdio: "ignore", detached: true }).unref();
+  // Fire-and-forget: dynamic import + open in a self-contained async IIFE
+  // so the caller's code stays sync. Errors swallowed (best-effort launch).
+  (async () => {
+    try {
+      const { default: open } = await import("open");
+      await open(String(target));
+    } catch {
+      // Best-effort; if it fails we already printed the path.
     }
-  } catch {
-    // Browser-open is best-effort; if it fails we already printed the path.
-  }
+  })();
 }
 const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
 const PRESETS_DIR = path.resolve(REPO_ROOT, "presets");
@@ -163,7 +156,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.7";
+const BETTERCLAW_VERSION = "0.3.8";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
