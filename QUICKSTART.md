@@ -10,18 +10,33 @@ Zero-to-first-agent in about 5 minutes. Three install paths depending on which a
 
 ## 0. Prerequisites (all paths)
 
-- **Node 22+** ([nvm](https://github.com/nvm-sh/nvm) on Linux/macOS, [nvm-windows](https://github.com/coreybutler/nvm-windows) on Windows)
-- **Claude CLI** authenticated — install from https://claude.com/cli; verify with `claude --version`
+- **Node 22+** ([nvm](https://github.com/nvm-sh/nvm) on Linux/macOS, [nvm-windows](https://github.com/coreybutler/nvm-windows) on Windows). Verify: `node --version`.
+
+- **Claude CLI** — the `claude` command-line binary. **This is NOT the same as Claude Desktop** (which is the GUI app for Cowork). BetterClaw needs the CLI for its compile step (`paragraph → graph` runs through `claude -p` as a subprocess). Cowork users still need it.
+
+  Install via npm (cross-platform):
+
+  ```bash
+  npm install -g @anthropic-ai/claude-code
+  claude     # interactive auth — sign in via browser
+  claude --version    # confirm install
+  ```
+
+- **Git Bash** (Windows only). Claude CLI on Windows requires a bash shell to run, and BetterClaw's Cowork plugin uses a bash hook shim. Both work cleanly in Git Bash.
+
+  Install Git for Windows from https://git-scm.com/download/win. Accept defaults; pick the "Git from the command line and also from 3rd-party software" PATH option. After install, "Git Bash" appears in the Start menu as its own terminal. **Run all BetterClaw commands from Git Bash** (not PowerShell or CMD) on Windows. Verify: `bash --version`.
+
+  *(Linux and macOS already have a working bash; no extra step.)*
 
 ## 1. Install BetterClaw (all paths, all OSes)
 
 ```bash
 npm install -g @betterclaw-ai/cli @betterclaw-ai/plugin-openclaw
 
-betterclaw --version    # should print "betterclaw 0.3.0"
+betterclaw --version    # should print "betterclaw 0.3.1" or higher
 ```
 
-That's it. Works on Linux, macOS, and Windows — npm handles the per-platform binary shim creation. **No source clone, no symlinks, no PATH editing.**
+That's it. Works on Linux, macOS, and Windows (Git Bash) — npm handles the per-platform binary shim creation. **No source clone, no symlinks, no PATH editing.**
 
 First `betterclaw` invocation prints a one-line notice about anonymous local-only usage telemetry written to `~/.betterclaw/telemetry.jsonl` — no PII, no remote collector. Opt out any time: `betterclaw telemetry off`.
 
@@ -169,6 +184,10 @@ betterclaw load customer-triage
 `betterclaw doctor` first — it tells you exactly what's broken.
 
 **`betterclaw: command not found` (after `npm install -g`)** — npm's global bin dir isn't on PATH. Run `npm config get prefix` to find it (usually `~/.npm-global` on Linux/macOS, `%APPDATA%\npm` on Windows). Add `<prefix>/bin` (or just `<prefix>` on Windows) to PATH and restart your shell.
+
+**`error: \`claude\` CLI not found on PATH`** — you have Claude Desktop (GUI) but not Claude CLI (command-line). They're separate. Install: `npm install -g @anthropic-ai/claude-code`, then `claude` to auth.
+
+**Claude CLI says "requires git-bash" on Windows** — install Git for Windows from https://git-scm.com/download/win, then run BetterClaw commands from the Git Bash terminal (not PowerShell or CMD).
 
 **"plugins.allow is empty"** (OpenClaw) — `openclaw config set plugins.allow '["betterclaw", "anthropic", "acpx"]'`.
 
