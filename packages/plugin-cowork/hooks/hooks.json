@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-shim.sh pre-tool-call"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/hook-shim.mjs\" pre-tool-call"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-shim.sh user-prompt-submit"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/hook-shim.mjs\" user-prompt-submit"
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/bin/hook-shim.sh post-tool-call"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/hook-shim.mjs\" post-tool-call"
           }
         ]
       }

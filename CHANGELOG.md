@@ -4,6 +4,26 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.10] — 2026-04-27
+
+**Theme:** Cowork install becomes one-line; cross-platform hook shim; clearer next-step guidance.
+
+### Added
+
+- **`@betterclaw-ai/plugin-cowork` is now published to npm.** Previously `private: true` and required a sparse-clone workaround. Now `npm install -g @betterclaw-ai/plugin-cowork` works cross-platform. Update QUICKSTART Path A removes the clone step.
+
+- **Cross-platform Cowork hook shim.** `bin/hook-shim.mjs` (Node) replaces `bin/hook-shim.sh` (bash). Works on Linux, macOS, and Windows directly — no WSL or Git Bash required. Node is already a hard requirement for BetterClaw, so no new dependency.
+
+### Changed
+
+- **Smarter `betterclaw run` error when openclaw is missing.** Instead of a generic "openclaw not recognized," the CLI now detects the missing binary and prints both forward paths: install OpenClaw (`npm install -g openclaw@latest`) OR switch to the Cowork path (`npm install -g @betterclaw-ai/plugin-cowork` + use Claude Desktop). Tells the user where the active graph already is.
+
+- **Post-compile next-steps differentiate Cowork vs OpenClaw.** The previous output assumed everyone runs `betterclaw run`, which only works for OpenClaw users. Now shows both paths with the install one-liner for each.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.10 @betterclaw-ai/plugin-openclaw@0.3.10 @betterclaw-ai/plugin-cowork@0.3.10`. No state migration needed.
+
 ## [0.3.9] — 2026-04-27
 
 **Theme:** the actual root cause behind v0.3.4-v0.3.8's browser-open saga.

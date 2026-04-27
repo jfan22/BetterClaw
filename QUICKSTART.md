@@ -57,18 +57,18 @@ These are Anthropic-verified — you'll see a normal Google OAuth consent screen
 
 ### A.2. Install the BetterClaw Cowork plugin
 
-The Cowork plugin needs to be loaded from a local directory (Claude Desktop's plugin loader doesn't pull from npm yet). Until [v0.3.1 publishes `@betterclaw-ai/plugin-cowork` to npm](https://github.com/jfan22/BetterClaw/issues), grab just that directory from the repo:
-
 ```bash
-# One-liner: download just the plugin-cowork directory
-git clone --depth 1 --filter=blob:none --sparse https://github.com/jfan22/BetterClaw.git
-cd BetterClaw
-git sparse-checkout set packages/plugin-cowork
+npm install -g @betterclaw-ai/plugin-cowork
 
-claude --plugin-dir $PWD/packages/plugin-cowork
+# Load the plugin into Claude Desktop. Path differs slightly by OS:
+# - Linux / macOS / Git Bash:
+claude --plugin-dir "$(npm root -g)/@betterclaw-ai/plugin-cowork"
+
+# - Windows PowerShell:
+claude --plugin-dir "$(npm root -g)\@betterclaw-ai\plugin-cowork"
 ```
 
-**Windows note:** the Cowork plugin's hook shim is a bash script. On Windows you need [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) (Ubuntu under WSL works fine) or Git Bash. Run the `claude --plugin-dir` command from the WSL/Git Bash shell, not PowerShell or CMD.
+The plugin's hook shim is a Node script (cross-platform), so it works on Linux, macOS, and Windows directly. No WSL or Git Bash required.
 
 ### A.3. Compile and run a workflow
 

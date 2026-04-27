@@ -174,7 +174,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.9";
+const BETTERCLAW_VERSION = "0.3.10";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -974,6 +974,32 @@ if (args[0] === "run") {
     console.error("Usage: betterclaw run \"<task>\"");
     process.exit(1);
   }
+  // Pre-check that openclaw is installed, since `betterclaw run` is the
+  // OpenClaw path. If it's missing, surface both install paths clearly so
+  // Cowork users (who don't need OpenClaw at all) know they're on the
+  // wrong path.
+  const ocCheck = spawnSync("openclaw", ["--version"], winSpawnOpts({ encoding: "utf8" }));
+  if (ocCheck.status !== 0 || ocCheck.error?.code === "ENOENT") {
+    console.error();
+    console.error(`  ${deny("✗")}  ${bold("\`openclaw\` CLI not found.")} \`betterclaw run\` is the OpenClaw path.`);
+    console.error();
+    console.error(`     Two ways forward:`);
+    console.error();
+    console.error(`     ${bold("Option 1 — Cowork (recommended for Claude Desktop users):")}`);
+    console.error(`        npm install -g @betterclaw-ai/plugin-cowork`);
+    console.error(`        claude --plugin-dir "$(npm root -g)/@betterclaw-ai/plugin-cowork"`);
+    console.error(`        Then ask the agent ${bold("inside Claude Desktop")} to do your task.`);
+    console.error(`        BetterClaw enforces the active graph automatically.`);
+    console.error();
+    console.error(`     ${bold("Option 2 — Install OpenClaw:")}`);
+    console.error(`        npm install -g openclaw@latest`);
+    console.error(`        openclaw models auth login --provider anthropic --method cli --set-default`);
+    console.error(`        # then re-run: betterclaw run "<task>"`);
+    console.error();
+    console.error(`     ${dim("Active graph already at:")} ${gray(GRAPH_PATH)}`);
+    console.error();
+    process.exit(2);
+  }
   ensureDaemonRunning();
   maybeShowFeedbackCTA();
   // Exec openclaw agent with the task. Leave the daemon running after exit so
@@ -1081,9 +1107,16 @@ fs.writeFileSync(GRAPH_PATH, JSON.stringify(graph, null, 2) + "\n");
 fs.writeFileSync(PARAGRAPH_PATH, paragraph + "\n");
 console.log(`  ${allow("✓")}  Written to ${gray(GRAPH_PATH)}`);
 console.log();
-console.log("  " + dim("Next:"));
+console.log("  " + dim("Next — depends on which agent runtime you use:"));
+console.log();
+console.log("  " + bold("Cowork (Claude Desktop):"));
+console.log("    Open Claude Desktop and ask the agent to do your task.");
+console.log("    The Cowork plugin enforces the active graph automatically.");
+console.log("    " + dim("Setup once: ") + accent("npm install -g @betterclaw-ai/plugin-cowork") + dim(" then ") + accent("claude --plugin-dir <plugin-path>"));
+console.log();
+console.log("  " + bold("OpenClaw (CLI):"));
 console.log("    " + accent(`betterclaw run "<your task>"`));
-console.log("  " + dim("The plugin picks up the new graph on the next agent turn."));
+console.log("    " + dim("Requires ") + accent("npm install -g openclaw@latest") + dim(" + auth setup."));
 console.log();
 
 // ---- helpers ----
