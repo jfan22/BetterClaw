@@ -75,21 +75,33 @@ function winSafeArg(s) {
 // Cross-platform "open in default browser" (or default app for the URL/file).
 // Detached so the browser window survives our process exit. Stdout/stderr
 // silenced because none of these openers are our concern after launch.
+//
+// On Windows, we invoke powershell.exe with -EncodedCommand to call
+// Start-Process. This is the same approach used by the popular `open` npm
+// package and works reliably across calling shells (PowerShell, CMD, Git
+// Bash, WSL) because:
+//   1. powershell.exe is at a stable system path on every Windows install
+//   2. Start-Process is the canonical Windows file-open primitive
+//   3. -EncodedCommand (base64 UTF-16LE) sidesteps all shell-quoting
+//      issues by passing the command opaquely — paths with spaces, quotes,
+//      special chars all survive intact
+//
+// Earlier attempts (cmd /c start with various invocations) worked from
+// some shells but not others due to PowerShell's child-process detachment
+// quirks. Direct powershell.exe invocation removes the calling-shell
+// dependency.
 function openInBrowser(target) {
   try {
     if (process.platform === "darwin") {
       spawn("open", [target], { stdio: "ignore", detached: true }).unref();
     } else if (IS_WINDOWS) {
-      // shell: true forces invocation through cmd.exe, where `start` is a
-      // builtin. The empty "" is `start`'s title arg (required when the
-      // path may contain spaces). Without shell:true, plain `spawn("cmd",
-      // ["/c", ...])` doesn't always work in Git Bash + Node combinations
-      // because of msys2 path-translation gotchas.
-      spawn(`start "" "${String(target).replace(/"/g, '\\"')}"`, [], {
-        stdio: "ignore",
-        detached: true,
-        shell: true,
-      }).unref();
+      const psCommand = `Start-Process -FilePath ${JSON.stringify(String(target))}`;
+      const encoded = Buffer.from(psCommand, "utf16le").toString("base64");
+      spawn("powershell.exe", [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", encoded,
+      ], { stdio: "ignore", detached: true }).unref();
     } else {
       spawn("xdg-open", [target], { stdio: "ignore", detached: true }).unref();
     }
@@ -158,7 +170,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.5";
+const BETTERCLAW_VERSION = "0.3.6";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;

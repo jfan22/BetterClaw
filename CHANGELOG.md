@@ -4,6 +4,21 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.6] — 2026-04-27
+
+**Theme:** browser auto-open take 3 — works in PowerShell now via `powershell.exe -EncodedCommand`.
+
+### Fixed
+
+- **Browser auto-open in PowerShell.** v0.3.5 used `cmd /c start` via `shell: true`, which worked from Git Bash but not PowerShell — PowerShell's child-process detachment model has quirks that prevent `start` from working reliably. v0.3.6 invokes `powershell.exe -EncodedCommand` directly with a base64 UTF-16LE encoded `Start-Process` command. This is the same approach used by the popular `open` npm package and works across all calling shells (PowerShell, CMD, Git Bash, WSL) because:
+  - `powershell.exe` is at a stable system path on every Windows install
+  - `Start-Process` is the canonical Windows file-open primitive
+  - `-EncodedCommand` sidesteps all shell-quoting issues by passing the command opaquely
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.6 @betterclaw-ai/plugin-openclaw@0.3.6`. No state migration needed.
+
 ## [0.3.5] — 2026-04-27
 
 **Theme:** browser auto-open take 2 + relax over-strict graph validation.
