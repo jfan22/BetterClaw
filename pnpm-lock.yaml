@@ -18,7 +18,11 @@ importers:
 
   packages/contracts: {}
 
-  packages/plugin-cowork: {}
+  packages/plugin-cowork:
+    dependencies:
+      '@betterclaw-ai/cli':
+        specifier: '>=0.3.10'
+        version: 0.3.10
 
   packages/plugin-openclaw:
     dependencies:
@@ -27,6 +31,11 @@ importers:
         version: 0.34.49
 
 packages:
+
+  '@betterclaw-ai/cli@0.3.10':
+    resolution: {integrity: sha512-Lqt/Nk2ZIeFDPgNANsS5SYR6SrO23+MSNHqKhUT2JKecnIegy5KKK31ARNPdV/5xfOtroFwv1ot7fjxDvarRmg==}
+    engines: {node: '>=22'}
+    hasBin: true
 
   '@sinclair/typebox@0.34.49':
     resolution: {integrity: sha512-brySQQs7Jtn0joV8Xh9ZV/hZb9Ozb0pmazDIASBkYKCjXrXU3mpcFahmK/z4YDhGkQvP9mWJbVyahdtU5wQA+A==}
@@ -82,6 +91,10 @@ packages:
     engines: {node: '>=20'}
 
 snapshots:
+
+  '@betterclaw-ai/cli@0.3.10':
+    dependencies:
+      open: 11.0.0
 
   '@sinclair/typebox@0.34.49': {}
 
