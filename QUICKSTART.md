@@ -8,6 +8,12 @@ Zero-to-first-agent in about 5 minutes. Three install paths depending on which a
 | **B. OpenClaw (CLI)** | Developers running their own MCP servers | ~10 min |
 | **C. Demo (no real tools)** | Trying BetterClaw out before committing | ~3 min |
 
+**Supported platforms** (verified end-to-end as of v0.3.10):
+
+- ✅ Linux
+- ✅ macOS
+- ✅ Windows (PowerShell or Git Bash; both work for the CLI install + compile + Cowork plugin paths)
+
 ## 0. Prerequisites (all paths)
 
 - **Node 22+** ([nvm](https://github.com/nvm-sh/nvm) on Linux/macOS, [nvm-windows](https://github.com/coreybutler/nvm-windows) on Windows). Verify: `node --version`.

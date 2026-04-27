@@ -1,10 +1,21 @@
 # BetterClaw
 
-**v0.3.0** — workflow-enforcement layer for AI agents
+**v0.3.10** — workflow-enforcement layer for AI agents
+
+[![npm version](https://img.shields.io/npm/v/@betterclaw-ai/cli)](https://www.npmjs.com/package/@betterclaw-ai/cli)
+**Cross-platform:** Linux, macOS, Windows (PowerShell + Git Bash) — verified end-to-end on all three as of v0.3.10.
 
 BetterClaw is the **workflow-enforcement layer** between your AI agent and its tools. You write a paragraph; BetterClaw compiles it into a workflow graph; the plugin enforces that graph at runtime. Tools come from the host environment ([Anthropic Cowork](https://claude.com/product/claude-cowork) connectors, [OpenClaw](https://openclaw.ai) MCP servers — with [Nous Research Hermes](https://nousresearch.com/hermes-3) and OpenAI agent runtimes on the roadmap). BetterClaw doesn't own or bundle them; it gates calls to them.
 
 What you get: (a) a declared workflow that the agent must follow, (b) snap-back-on-deviation when the agent tries to step outside, (c) approval gates that pause the run on sensitive tool calls and resume after human approval, (d) a cross-turn audit log so future sessions see what the user already handled.
+
+## Install (one line)
+
+```bash
+npm install -g @betterclaw-ai/cli @betterclaw-ai/plugin-openclaw @betterclaw-ai/plugin-cowork
+```
+
+Works on Linux, macOS, and Windows. See [QUICKSTART.md](./QUICKSTART.md) for the full setup including Claude Desktop / OpenClaw integration.
 
 ## Why is this useful?
 
@@ -66,6 +77,26 @@ betterclaw telemetry export --since 2026-01-01 > q1-audit.jsonl
 ```
 
 One row per attempted tool call — allowed, blocked, approved, denied — with timestamps, params, approver identity. The agent tried to promise a Q3 feature ship date that wasn't committed? Blocked as a deviation, because the graph has no node where that tool is allowed. You have evidence the AI's worst impulses were caught before they hit a customer.
+
+### Live evidence (this isn't theoretical)
+
+Here's an actual run on a fresh Windows install (v0.3.10), compiling and enforcing the workflow `"summarize my inbox"` inside Claude Desktop:
+
+```text
+❯ summarize my inbox
+  ⎿  PreToolUse:ToolSearch hook returned blocking error
+  ⎿  DEVIATION: tool 'ToolSearch' not allowed in node 'search_inbox'
+     (Search recent messages in the inbox to gather material to summarize.)
+     Allowed here: [mcp__claude_ai_Gmail__search_threads]
+     Next nodes: [read_threads [mcp__claude_ai_Gmail__get_thread]]
+     Pick a tool from those lists.
+
+  Called Gmail (ctrl+o to expand)
+
+● Here's a summary of your recent inbox (top 20 threads, all from today)…
+```
+
+What happened, in order: the agent tried a generic `ToolSearch` (not in the workflow). BetterClaw's hook fired, blocked it, surfaced the allowed tools to the agent. The agent read the deviation message, switched to `mcp__claude_ai_Gmail__search_threads`, and completed the task with the *right* tool. Snap-back-on-deviation working live, on Windows, in Claude Desktop, no manual intervention.
 
 ## Start here
 
