@@ -4,6 +4,22 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.3] — 2026-04-27
+
+**Theme:** Windows binary lookup, take 2. v0.3.2 added a `where`-based path resolver but Node still couldn't invoke `.cmd` shims even with the full path. v0.3.3 uses `shell: true` on Windows + stdin-based prompt passing (no shell escaping needed for the user-supplied prompt).
+
+### Fixed
+
+- **Windows: `claude` CLI still not found by `betterclaw` even after v0.3.2.** Node has a documented quirk where `.cmd` shims (the standard npm install format on Windows) require `shell: true` to invoke regardless of whether you have the full path. v0.3.2 added a path resolver but didn't add `shell: true`, so the bug persisted. v0.3.3 introduces `winSpawnOpts()` that adds `shell: true` on Windows for all binary invocations.
+
+- **Compile prompt safe to pass on Windows.** The compile call passes a multi-line prompt (with possible shell metacharacters from the user's paragraph) to `claude -p`. Shell-escaping that on cmd.exe is fragile. v0.3.3 sends the prompt via stdin (`input` option of spawnSync) instead, sidestepping shell escaping entirely.
+
+- **Better Windows error guidance.** Compile-failed error message on Windows includes a hint to run from Git Bash rather than PowerShell or CMD.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.3 @betterclaw-ai/plugin-openclaw@0.3.3`. No state migration needed.
+
 ## [0.3.2] — 2026-04-27
 
 **Theme:** fix Windows binary lookup. Cross-platform install actually works now.
