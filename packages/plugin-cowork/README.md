@@ -44,13 +44,25 @@ Hook dispatch latency: ~100-150ms per invocation (Node cold start for the CLI). 
 Prereqs:
 
 - Claude Desktop (latest) with Cowork enabled
-- `@betterclaw-ai/cli` on PATH — `npm install -g @betterclaw-ai/cli` OR clone the BetterClaw repo and `ln -sf $PWD/packages/cli/bin/betterclaw ~/.local/bin/betterclaw`
+- `@betterclaw-ai/cli` on PATH — `npm install -g @betterclaw-ai/cli` (works on Linux, macOS, Windows; npm handles the per-platform shim creation)
 
-Install the plugin via Claude Desktop's plugin manager (Settings → Plugins → Install from directory) and point it at `packages/plugin-cowork/`. Or for local development:
+This plugin loads from a local directory (Claude Desktop's plugin loader doesn't pull from npm yet). Until v0.3.1 publishes `@betterclaw-ai/plugin-cowork` to npm, the simplest way to grab just this directory:
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse https://github.com/jfan22/BetterClaw.git
+cd BetterClaw
+git sparse-checkout set packages/plugin-cowork
+
+claude --plugin-dir $PWD/packages/plugin-cowork
+```
+
+Or, if you've already cloned the full repo for development:
 
 ```bash
 claude --plugin-dir /path/to/BetterClaw/packages/plugin-cowork
 ```
+
+**Windows note:** the hook shim (`bin/hook-shim.sh`) is a bash script. On Windows you need [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) or Git Bash. Run the `claude --plugin-dir` command from the WSL/Git Bash shell, not PowerShell or CMD.
 
 Verify it loaded: ask Claude to run a tool. You should see BetterClaw either:
 

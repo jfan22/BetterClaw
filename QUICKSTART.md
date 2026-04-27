@@ -10,47 +10,50 @@ Zero-to-first-agent in about 5 minutes. Three install paths depending on which a
 
 ## 0. Prerequisites (all paths)
 
-- **Node 22+** (`nvm install 22 && nvm use 22 && nvm alias default 22`)
-- **pnpm** (`npm install -g pnpm`, or see https://pnpm.io/installation)
-- **Claude CLI** authenticated (`claude --version` should work)
+- **Node 22+** ([nvm](https://github.com/nvm-sh/nvm) on Linux/macOS, [nvm-windows](https://github.com/coreybutler/nvm-windows) on Windows)
+- **Claude CLI** authenticated — install from https://claude.com/cli; verify with `claude --version`
 
-## 1. Install BetterClaw (all paths)
+## 1. Install BetterClaw (all paths, all OSes)
 
 ```bash
-git clone https://github.com/jfan22/BetterClaw.git ~/Prj/BetterClaw
-cd ~/Prj/BetterClaw
-pnpm install
-
-# Symlink the CLI onto your PATH
-ln -sf $PWD/packages/cli/bin/betterclaw ~/.local/bin/betterclaw
+npm install -g @betterclaw-ai/cli @betterclaw-ai/plugin-openclaw
 
 betterclaw --version    # should print "betterclaw 0.3.0"
 ```
 
-First `betterclaw` invocation prints a one-line notice about anonymous usage telemetry written to `~/.betterclaw/telemetry.jsonl` — no PII, local-only, no remote collector. Opt out any time: `betterclaw telemetry off`.
+That's it. Works on Linux, macOS, and Windows — npm handles the per-platform binary shim creation. **No source clone, no symlinks, no PATH editing.**
+
+First `betterclaw` invocation prints a one-line notice about anonymous local-only usage telemetry written to `~/.betterclaw/telemetry.jsonl` — no PII, no remote collector. Opt out any time: `betterclaw telemetry off`.
 
 ---
 
 ## Path A — Cowork (recommended for non-developers)
 
-### A.1. Install Claude Desktop and enable the connectors you want
+### A.1. Install Claude Desktop and enable connectors
 
-Download Claude Desktop, sign in, and in claude.ai under Settings → Connectors, enable any of:
+Download Claude Desktop from https://claude.com/download. Sign in. In claude.ai under Settings → Connectors, enable any of:
 
 - **Gmail**
 - **Google Calendar**
 - **Google Drive**
 - **Apollo.io**
 
-Anthropic ships verified OAuth — click through the standard Google consent screen. **No GCP project, no credentials.json.** Zero developer setup.
+These are Anthropic-verified — you'll see a normal Google OAuth consent screen, not a "Google hasn't verified this app" warning. Zero GCP project, zero credentials.json.
 
 ### A.2. Install the BetterClaw Cowork plugin
 
+The Cowork plugin needs to be loaded from a local directory (Claude Desktop's plugin loader doesn't pull from npm yet). Until [v0.3.1 publishes `@betterclaw-ai/plugin-cowork` to npm](https://github.com/jfan22/BetterClaw/issues), grab just that directory from the repo:
+
 ```bash
+# One-liner: download just the plugin-cowork directory
+git clone --depth 1 --filter=blob:none --sparse https://github.com/jfan22/BetterClaw.git
+cd BetterClaw
+git sparse-checkout set packages/plugin-cowork
+
 claude --plugin-dir $PWD/packages/plugin-cowork
 ```
 
-This loads the BetterClaw Cowork plugin into Claude Desktop. The plugin enforces over the connectors you enabled in step A.1.
+**Windows note:** the Cowork plugin's hook shim is a bash script. On Windows you need [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) (Ubuntu under WSL works fine) or Git Bash. Run the `claude --plugin-dir` command from the WSL/Git Bash shell, not PowerShell or CMD.
 
 ### A.3. Compile and run a workflow
 
@@ -62,22 +65,27 @@ BetterClaw compiles your paragraph into a graph that references concrete tool na
 
 ---
 
-## Path B — OpenClaw (developer route)
+## Path B — OpenClaw
 
 ### B.1. Install OpenClaw + register Claude
 
 ```bash
 npm install -g openclaw@latest
 openclaw models auth login --provider anthropic --method cli --set-default
-openclaw doctor    # verify
 ```
 
-### B.2. Install the BetterClaw plugin
+### B.2. Install the BetterClaw plugin from npm
 
 ```bash
-openclaw plugins install $PWD/packages/plugin-openclaw --link
-openclaw config set plugins.allow '["betterclaw"]'
+openclaw plugins install @betterclaw-ai/plugin-openclaw
+openclaw config set plugins.allow '["betterclaw", "anthropic", "acpx"]'
+openclaw config set gateway.mode local
+
+systemctl --user restart openclaw-gateway   # Linux only
+openclaw doctor                              # verify everything's green
 ```
+
+(On macOS/Windows, OpenClaw uses launchd / a Windows service equivalent; restart via that mechanism. `openclaw doctor --fix` handles platform differences.)
 
 ### B.3. Bring your own tools
 
@@ -98,7 +106,7 @@ If you want Gmail under OpenClaw and don't want to use Cowork:
 betterclaw connect gmail
 ```
 
-This walks you through enabling BetterClaw's bundled Gmail integration, which **does** require a GCP project + OAuth setup. Most users should prefer Cowork (Path A) — that's why this path is opt-in.
+This walks you through enabling BetterClaw's bundled Gmail integration, which **does** require a GCP project + OAuth setup. Most users should prefer Cowork (Path A) — that's why this path is opt-in. **Windows note:** the Gmail MCP daemon uses Unix domain sockets and is unreliable on Windows; use WSL or Cowork instead.
 
 ---
 
@@ -107,11 +115,10 @@ This walks you through enabling BetterClaw's bundled Gmail integration, which **
 For trying BetterClaw out before committing to either Cowork or OpenClaw:
 
 ```bash
-# Tutorial demo — uses dummyjson.com fake catalog, zero auth
 BETTERCLAW_DEMO=1 betterclaw "find a wireless mouse under $50, compare the top two"
 ```
 
-Demo tools are clearly labeled `[DEMO]` and only registered when `BETTERCLAW_DEMO=1` is set. They don't ship in the production code path.
+Demo tools (`shop_search`, `shop_details`, `shop_compare`) are clearly labeled `[DEMO]` and only registered when `BETTERCLAW_DEMO=1` is set. They don't ship in the production code path.
 
 ---
 
@@ -120,12 +127,14 @@ Demo tools are clearly labeled `[DEMO]` and only registered when `BETTERCLAW_DEM
 ### Live view (any path)
 
 In one terminal:
+
 ```bash
 betterclaw view --watch
 # → opens http://127.0.0.1:<port>/
 ```
 
 In another terminal:
+
 ```bash
 betterclaw run "<your task>"
 ```
@@ -143,14 +152,14 @@ betterclaw approve <id>        # dispatch to the real tool
 betterclaw deny <id>           # cancel
 ```
 
-### Sharing
+### Sharing patterns
 
 ```bash
 betterclaw save customer-triage              # snapshot to ~/.betterclaw/library/
-betterclaw list                              # see all saved graphs
+betterclaw list                              # see all saved patterns
 betterclaw publish customer-triage --to gist # via `gh gist create`
 
-# Another developer, later:
+# Another user, later:
 betterclaw fork <gist-url> customer-triage
 betterclaw load customer-triage
 ```
@@ -159,17 +168,23 @@ betterclaw load customer-triage
 
 `betterclaw doctor` first — it tells you exactly what's broken.
 
-**"plugins.allow is empty"** (OpenClaw) — `openclaw config set plugins.allow '["betterclaw"]'`.
+**`betterclaw: command not found` (after `npm install -g`)** — npm's global bin dir isn't on PATH. Run `npm config get prefix` to find it (usually `~/.npm-global` on Linux/macOS, `%APPDATA%\npm` on Windows). Add `<prefix>/bin` (or just `<prefix>` on Windows) to PATH and restart your shell.
+
+**"plugins.allow is empty"** (OpenClaw) — `openclaw config set plugins.allow '["betterclaw", "anthropic", "acpx"]'`.
 
 **"No API key found"** — Claude isn't the default model. `openclaw models auth login --provider anthropic --method cli --set-default`.
 
 **Agent says "I don't have an X tool"** — the host environment doesn't expose that tool.
 - Cowork: enable the relevant connector in Claude.ai.
-- OpenClaw: install the relevant MCP server (`openclaw mcp install <name>`).
+- OpenClaw: install the relevant MCP server.
 - Gmail-specifically (OpenClaw without Cowork): `betterclaw connect gmail`.
 
-**"daemon not reachable"** or **"daemon not running"** — only relevant if you ran `betterclaw connect gmail`. `betterclaw start` to start it; `betterclaw status` to check.
+**"daemon not reachable"** or **"daemon not running"** — only relevant if you ran `betterclaw connect gmail`. `betterclaw start` to start it; `betterclaw status` to check. **Windows users:** the daemon uses Unix sockets and is unreliable on Windows; consider WSL or Cowork.
 
-**`openclaw agent --local` hangs** — likely waiting for approval. `betterclaw pending` to check; if there's a pending approval, `betterclaw approve <id>` resumes.
+**`openclaw agent` hangs** — likely waiting for approval. `betterclaw pending` to check; if there's a pending approval, `betterclaw approve <id>` resumes.
 
 **Compile produces an `unrecognized_action` node** — your paragraph references an action that doesn't map to any plausible host-provided tool. Either rewrite the paragraph, or enable the relevant connector / install the relevant MCP server, then recompile.
+
+## For contributors
+
+If you want to modify BetterClaw's source, you do need a clone. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the dev-setup flow (`pnpm install`, `npm link`, etc.).

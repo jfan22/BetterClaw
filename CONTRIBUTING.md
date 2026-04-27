@@ -56,19 +56,32 @@ If something in the docs is unclear, wrong, or stale, send a PR. README, QUICKST
 
 ## Local development setup
 
+This is the source-clone setup, only needed if you're modifying BetterClaw itself. End users install via `npm install -g @betterclaw-ai/cli @betterclaw-ai/plugin-openclaw` — no clone required (see [QUICKSTART.md](./QUICKSTART.md)).
+
 ```bash
 git clone https://github.com/jfan22/BetterClaw.git
 cd BetterClaw
 pnpm install
+
+# Put the CLI on PATH (Linux/macOS)
 ln -sf $PWD/packages/cli/bin/betterclaw ~/.local/bin/betterclaw
 
-# OpenClaw plugin (linked, so edits take effect immediately)
-openclaw plugins install $PWD/packages/plugin-openclaw --link
-openclaw config set plugins.allow '["betterclaw"]'
+# Or, for cross-platform (works on Windows too):
+cd packages/cli && npm link && cd ../..
 
-# Cowork plugin (Claude Desktop)
+# OpenClaw plugin — linked from source so edits take effect immediately
+# (skips the npm-installed copy and runs your local source instead)
+openclaw plugins install $PWD/packages/plugin-openclaw --link
+openclaw config set plugins.allow '["betterclaw", "anthropic", "acpx"]'
+
+# Cowork plugin (Claude Desktop) — plugin-cowork runs from a directory,
+# point at your source so edits take effect immediately
 claude --plugin-dir $PWD/packages/plugin-cowork
 ```
+
+**Windows note:** `ln -sf` is Unix-only. Use `npm link` instead for cross-platform PATH setup. The Cowork plugin's `bin/hook-shim.sh` is a bash script and requires WSL or Git Bash on Windows.
+
+**Pnpm workspace gotcha:** if `openclaw plugins install ... --link` fails with a "node_modules symlink target outside install root" safety scan error, that's pnpm's symlink-style node_modules. Add `--dangerously-force-unsafe-install` to bypass — safe since you control the source.
 
 ## Testing your changes
 
