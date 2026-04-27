@@ -4,6 +4,29 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.1] — 2026-04-27
+
+**Theme:** fix the path-mismatch bug that broke npm-installed CLIs on Windows (and was a workaround on Linux).
+
+### Fixed
+
+- **Per-user state moves to `~/.betterclaw/`** (overrideable via `BETTERCLAW_HOME`). Previously the CLI computed paths like `active-graph.json` relative to a hardcoded source-tree layout (`packages/plugin-openclaw/`), which doesn't exist when the CLI is npm-installed. Result on Windows: `error: plugin root missing: <wrong path>` on every compile attempt. On Linux the CLI silently wrote to a path the npm-installed plugin couldn't read; we worked around with manual symlinks.
+
+  Now both CLI and plugin read/write `active-graph.json`, `active-paragraph.md`, `run.jsonl`, and `approvals/` from `~/.betterclaw/`. No symlinks needed; no PLUGIN_ROOT requirement; works identically across source-clone, `--link`, and npm install.
+
+- **`preflightCheck()` no longer requires PLUGIN_ROOT to exist.** The check was a leftover from the source-tree-only era.
+
+### Migration notes
+
+If you have an `active-graph.json` from a v0.3.0 source-tree install that you want to keep:
+
+```bash
+cp ~/Prj/BetterClaw/packages/plugin-openclaw/active-graph.json ~/.betterclaw/active-graph.json
+cp ~/Prj/BetterClaw/packages/plugin-openclaw/active-paragraph.md ~/.betterclaw/active-paragraph.md 2>/dev/null
+```
+
+Otherwise: just recompile from a paragraph, `betterclaw "<paragraph>"` writes to the new location.
+
 ## [0.3.0] — 2026-04-26
 
 **Theme:** BetterClaw refactors from a vertical bundler into a pure workflow-enforcement layer. The plugin no longer owns or registers tools by default; tools come from the host environment (Anthropic Cowork connectors or user-installed MCP servers). This removes the GCP-project setup wall from the non-tech-user golden path: Cowork users get Gmail / Calendar / Drive / Apollo with zero setup.

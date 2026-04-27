@@ -3,7 +3,13 @@
 // rule, and builds the deviation-error message the agent sees.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+
+// Per-user state dir, shared between the CLI and the plugin. Both write/read
+// through here so they stay in sync regardless of plugin install layout
+// (source clone, --link, or npm install).
+const BETTERCLAW_HOME = process.env.BETTERCLAW_HOME || path.join(os.homedir(), ".betterclaw");
 
 export function loadGraph(graphPath) {
   const raw = fs.readFileSync(graphPath, "utf8");
@@ -98,16 +104,19 @@ export function freshState(graph) {
   };
 }
 
-export function resolveDefaultGraphPath(pluginRoot) {
-  return path.join(pluginRoot, "active-graph.json");
+// Path resolvers ignore the legacy `pluginRoot` argument and return paths
+// under BETTERCLAW_HOME instead. The argument is preserved for call-site
+// backward compatibility (older callers still pass it; we just ignore it).
+export function resolveDefaultGraphPath(_pluginRoot) {
+  return path.join(BETTERCLAW_HOME, "active-graph.json");
 }
 
-export function resolveDefaultRunLogPath(pluginRoot) {
-  return path.join(pluginRoot, "run.jsonl");
+export function resolveDefaultRunLogPath(_pluginRoot) {
+  return path.join(BETTERCLAW_HOME, "run.jsonl");
 }
 
-export function resolveApprovalsDir(pluginRoot) {
-  return path.join(pluginRoot, "approvals");
+export function resolveApprovalsDir(_pluginRoot) {
+  return path.join(BETTERCLAW_HOME, "approvals");
 }
 
 // Global cancellation signal — set when the plugin VM is shutting down so

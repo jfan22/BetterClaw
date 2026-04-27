@@ -20,12 +20,32 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // We're at packages/cli/bin/betterclaw. The plugin is at packages/plugin-openclaw/
 // and presets live at the repo root (shared reference across packages).
+// Repo root (only meaningful when running from a source clone — used to find
+// bundled presets). On npm-installed CLIs, REPO_ROOT points at the npm node_modules
+// dir which doesn't have presets/. Preset commands gracefully no-op there.
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
+
+// Per-user state lives in ~/.betterclaw, NOT inside the plugin install dir.
+// This decouples the CLI's writes from where the plugin happens to be installed
+// (which differs between source-clone, --link, and npm install) and lets the
+// CLI run identically across all three. The plugin reads from the same paths
+// (see workflow.mjs#resolveDefaultGraphPath etc).
+//
+// Override with BETTERCLAW_HOME env var if you want a different location
+// (e.g. for tests or sandboxed environments).
+const BETTERCLAW_HOME = process.env.BETTERCLAW_HOME || path.join(os.homedir(), ".betterclaw");
+try { fs.mkdirSync(BETTERCLAW_HOME, { recursive: true }); } catch {}
+
+const GRAPH_PATH = path.join(BETTERCLAW_HOME, "active-graph.json");
+const PARAGRAPH_PATH = path.join(BETTERCLAW_HOME, "active-paragraph.md");
+const RUN_LOG_PATH = path.join(BETTERCLAW_HOME, "run.jsonl");
+const APPROVALS_DIR = path.join(BETTERCLAW_HOME, "approvals");
+
+// PLUGIN_ROOT is only needed for source-clone development (to surface a
+// `--link` install hint in `betterclaw doctor`). npm-installed CLI users
+// never hit this path; the constant is computed best-effort and never
+// required to exist.
 const PLUGIN_ROOT = path.resolve(REPO_ROOT, "packages", "plugin-openclaw");
-const GRAPH_PATH = path.join(PLUGIN_ROOT, "active-graph.json");
-const PARAGRAPH_PATH = path.join(PLUGIN_ROOT, "active-paragraph.md");
-const RUN_LOG_PATH = path.join(PLUGIN_ROOT, "run.jsonl");
-const APPROVALS_DIR = path.join(PLUGIN_ROOT, "approvals");
 const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
 const PRESETS_DIR = path.resolve(REPO_ROOT, "presets");
 
@@ -87,7 +107,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.0";
+const BETTERCLAW_VERSION = "0.3.1";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -3477,10 +3497,10 @@ ${timelineRows}
 }
 
 function preflightCheck() {
-  if (!fs.existsSync(PLUGIN_ROOT)) {
-    console.error(`error: plugin root missing: ${PLUGIN_ROOT}`);
-    process.exit(2);
-  }
+  // Per-user state dir is auto-created at module load (see BETTERCLAW_HOME).
+  // The compile path doesn't require PLUGIN_ROOT to exist — that constant only
+  // matters for source-clone dev workflows. npm-installed CLIs don't have it
+  // and shouldn't need it.
   const claudeCheck = spawnSync("claude", ["--version"], { encoding: "utf8" });
   if (claudeCheck.status !== 0) {
     console.error(`error: \`claude\` CLI not found on PATH. Install and auth first.`);
