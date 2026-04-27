@@ -4,6 +4,19 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.4] — 2026-04-27
+
+**Theme:** browser auto-open works on Windows now.
+
+### Fixed
+
+- **Mermaid graph preview didn't open the browser on Windows.** The CLI used `xdg-open` (Linux) or `open` (macOS) for browser launching, with no Windows fallback. v0.3.4 adds the missing case: `cmd /c start "" <target>` (the empty `""` is `start`'s required title arg when the path may contain spaces).
+- **Refactored four browser-open sites into a single `openInBrowser()` helper** so future platform fixes only need one place to update.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.4 @betterclaw-ai/plugin-openclaw@0.3.4`. No state migration needed.
+
 ## [0.3.3] — 2026-04-27
 
 **Theme:** Windows binary lookup, take 2. v0.3.2 added a `where`-based path resolver but Node still couldn't invoke `.cmd` shims even with the full path. v0.3.3 uses `shell: true` on Windows + stdin-based prompt passing (no shell escaping needed for the user-supplied prompt).

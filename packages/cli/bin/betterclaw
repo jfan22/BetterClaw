@@ -71,6 +71,27 @@ function winSafeArg(s) {
   const escaped = String(s).replace(/(["^])/g, "^$1");
   return `"${escaped.replace(/"/g, '\\"')}"`;
 }
+
+// Cross-platform "open in default browser" (or default app for the URL/file).
+// Detached so the browser window survives our process exit. Stdout/stderr
+// silenced because none of these openers are our concern after launch.
+function openInBrowser(target) {
+  try {
+    if (process.platform === "darwin") {
+      spawn("open", [target], { stdio: "ignore", detached: true }).unref();
+    } else if (IS_WINDOWS) {
+      // `start` is a cmd.exe builtin (not an external binary), so we go
+      // through cmd /c. The empty "" is the optional `start` title arg —
+      // required when the path may contain spaces, otherwise cmd treats
+      // the quoted path AS the title and silently does nothing.
+      spawn("cmd", ["/c", "start", "", target], { stdio: "ignore", detached: true }).unref();
+    } else {
+      spawn("xdg-open", [target], { stdio: "ignore", detached: true }).unref();
+    }
+  } catch {
+    // Browser-open is best-effort; if it fails we already printed the path.
+  }
+}
 const LIBRARY_DIR = path.join(os.homedir(), ".betterclaw", "library");
 const PRESETS_DIR = path.resolve(REPO_ROOT, "presets");
 
@@ -132,7 +153,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.3";
+const BETTERCLAW_VERSION = "0.3.4";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -1593,8 +1614,7 @@ function diffGraphs(nameA, nameB) {
   console.log(`  ${bold("Diff:")} ${accent(nameA)} ${dim("↔")} ${accent(nameB)}`);
   console.log(`  ${accent("→")} ${gray(htmlPath)}`);
   console.log();
-  const opener = process.platform === "darwin" ? "open" : "xdg-open";
-  spawn(opener, [htmlPath], { stdio: "ignore", detached: true }).unref();
+  openInBrowser(htmlPath);
 }
 
 function buildDiffMermaid(graph, other, side) {
@@ -3097,8 +3117,7 @@ function viewLastRun() {
   console.log(`  ${bold("Replay")}  ${ui.chip(allowEvents.length + " allowed", "allow")} ${ui.chip(deviationEvents.length + " deviation" + (deviationEvents.length === 1 ? "" : "s"), deviationEvents.length > 0 ? "deny" : null)}`);
   console.log(`  ${accent("→")} ${gray(htmlPath)}`);
   console.log();
-  const opener = process.platform === "darwin" ? "open" : "xdg-open";
-  spawn(opener, [htmlPath], { stdio: "ignore", detached: true }).unref();
+  openInBrowser(htmlPath);
 }
 
 async function startWatchServer() {
@@ -3158,8 +3177,7 @@ async function startWatchServer() {
   console.log();
   console.log("  " + dim("Ctrl+C here to stop."));
   console.log();
-  const opener = process.platform === "darwin" ? "open" : "xdg-open";
-  spawn(opener, [url], { stdio: "ignore", detached: true }).unref();
+  openInBrowser(url);
 
   await new Promise(() => {});
 }
@@ -3635,8 +3653,7 @@ async function renderAndConfirm(graph, paragraph) {
   } else {
     const htmlPath = writeHtml(graph, paragraph, mermaid);
     console.log(`  ${accent("→")} ${bold("Opened in browser:")} ${gray(htmlPath)}`);
-    const opener = process.platform === "darwin" ? "open" : "xdg-open";
-    spawn(opener, [htmlPath], { stdio: "ignore", detached: true }).unref();
+    openInBrowser(htmlPath);
   }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
