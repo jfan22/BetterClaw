@@ -4,6 +4,28 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.16] — 2026-04-28
+
+**Theme:** wire the watch UI for Cowork users — prerequisite for the upcoming approval-gate demo.
+
+### Fixed
+
+- **`betterclaw view --watch` was blind to Cowork sessions.** The watch UI polls `/state.json` every 500ms which reads `~/.betterclaw/run.jsonl` for `allow` / `deviation` / `approval_pending` / `approval_resolved` events. The OpenClaw plugin writes those events via `createRunLogger`. The Cowork hook never wrote any of them — only emitted to the internal `telemetry.jsonl`. Result: the live diagram never lit up green, deviations never appeared as ghost nodes, and approval banners never rendered for the entire Cowork user base.
+
+  Fix: the Cowork hook (`betterclaw hook pre-tool-call`) now writes the same four event types to `run.jsonl` that OpenClaw does, with identical shapes. The watch UI works for both runtimes without code changes.
+
+- **`run.jsonl` truncated per-session** for Cowork. The OpenClaw plugin truncates at VM init (each agent turn). The Cowork hook now truncates on the first hook fire of a fresh `session_id` (tracked via the existing `cowork-sessions.json`), matching that "one log = one turn" semantic.
+
+- **`appendRunEvent` no longer silently bails** when `run.jsonl` doesn't exist. It now creates the parent directory and the file. Best-effort writes still swallow errors. The watch UI no longer goes permanently blind after a manual log delete or first install.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.16 @betterclaw-ai/plugin-openclaw@0.3.16 @betterclaw-ai/plugin-cowork@0.3.16`. No state migration. Existing run.jsonl is overwritten on next session start (intentional — old events would be misleading anyway).
+
+### Coming next (v0.3.17)
+
+The Cowork approval flow currently denies the call, queues a `<id>.pending` file, and tells the agent "ask user to run `betterclaw approve <id>`" — fire-and-forget, no actual dispatch back into the Claude session. v0.3.17 converts this to **block-and-poll**: the hook holds the call (up to 55s, just under Cowork's 60s timeout), polls disk for `<id>.approved`/`<id>.denied`, and either lets the call through (Cowork dispatches the real action via its connector) or denies. This is the prerequisite for the live "approval gate stops a runaway Apollo campaign" demo.
+
 ## [0.3.15] — 2026-04-28
 
 **Theme:** fix the dead-end-empty-tools-node bug. The hook now walks transitively through pure-LLM-thinking nodes.

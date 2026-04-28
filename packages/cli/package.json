@@ -1,6 +1,6 @@
 {
   "name": "@betterclaw-ai/cli",
-  "version": "0.3.15",
+  "version": "0.3.16",
   "description": "BetterClaw CLI — compile paragraphs into workflow graphs and enforce them at runtime over your AI agent's tools (Cowork connectors or OpenClaw MCP servers).",
   "license": "Apache-2.0",
   "author": "BetterClaw contributors",

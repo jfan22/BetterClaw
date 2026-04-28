@@ -180,7 +180,7 @@ const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jso
 // Refresh with `betterclaw tools refresh` or BETTERCLAW_REFRESH_TOOL_CACHE=1.
 const TOOL_CACHE_PATH = path.join(os.homedir(), ".betterclaw", "tool-cache.json");
 const TOOL_CACHE_TTL_MS = 60 * 60 * 1000;
-const BETTERCLAW_VERSION = "0.3.15";
+const BETTERCLAW_VERSION = "0.3.16";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -2108,8 +2108,14 @@ function findPendingByPrefix(idPrefix) {
 }
 
 function appendRunEvent(event) {
-  if (!fs.existsSync(RUN_LOG_PATH)) return;
+  // Best-effort. The Cowork hook truncates run.jsonl at session start so
+  // the file exists by the time we get here on the Cowork path. The
+  // OpenClaw plugin manages its own writer (createRunLogger). For the
+  // CLI's own approve/deny dispatchers this is just a "log if you can"
+  // — if the file is missing, recreate it so the watch UI doesn't go
+  // permanently blind after a manual log delete.
   try {
+    fs.mkdirSync(path.dirname(RUN_LOG_PATH), { recursive: true });
     fs.appendFileSync(RUN_LOG_PATH, JSON.stringify(event) + "\n");
   } catch {}
 }
@@ -2416,14 +2422,14 @@ function getOrCreateCoworkSessionState(sessionId, graph) {
   const existing = sessions[sessionId];
   if (existing && existing.currentNode && graph._byId.has(existing.currentNode)) {
     existing.last_seen = new Date().toISOString();
-    return { state: existing, sessions };
+    return { state: existing, sessions, isNew: false };
   }
   const fresh = {
     ...freshWorkflowState(graph),
     last_seen: new Date().toISOString(),
   };
   sessions[sessionId] = fresh;
-  return { state: fresh, sessions };
+  return { state: fresh, sessions, isNew: true };
 }
 
 // Read recent approval history from ~/.betterclaw/history.jsonl. Mirrors the
@@ -2555,9 +2561,24 @@ function handlePreToolCallHook(payload) {
   // (V2: consider per-vertical allowlists for built-in tools too.)
   const verticalToolName = toolName;
 
-  const { state, sessions } = getOrCreateCoworkSessionState(sessionId, graph);
+  const { state, sessions, isNew } = getOrCreateCoworkSessionState(sessionId, graph);
+  // First hook fire of a fresh session = start of an agent turn. Truncate
+  // run.jsonl so `betterclaw view --watch` shows just this turn's events,
+  // matching what the OpenClaw plugin's createRunLogger does at VM init.
+  // Without this, the watch UI would accumulate events across turns and
+  // the live diagram would be a mess.
+  if (isNew) {
+    try {
+      fs.writeFileSync(RUN_LOG_PATH, "");
+    } catch (err) {
+      process.stderr.write(`[betterclaw-hook] run-log truncate failed: ${err.message}\n`);
+    }
+  }
+
+  const ts = new Date().toISOString();
+  const prevNode = state.currentNode;
   const result = enforceWorkflow(graph, state, verticalToolName, toolInput);
-  sessions[sessionId] = { ...state, last_seen: new Date().toISOString() };
+  sessions[sessionId] = { ...state, last_seen: ts };
   saveCoworkSessions(sessions);
 
   if (result.decision === "allow") {
@@ -2602,6 +2623,16 @@ function handlePreToolCallHook(payload) {
         };
       }
 
+      // Surface the pending approval to the watch UI's live timeline.
+      appendRunEvent({
+        ts,
+        type: "approval_pending",
+        id: approvalId,
+        node: state.currentNode,
+        tool: verticalToolName,
+        params: toolInput,
+      });
+
       emitTelemetry("approve_queued", {
         vertical: graph.vertical,
         tool_name: verticalToolName,
@@ -2624,7 +2655,16 @@ function handlePreToolCallHook(payload) {
       };
     }
 
-    // Allow the tool call to proceed.
+    // Allow the tool call to proceed. Surface to the watch UI so the
+    // diagram lights up as the agent traverses the graph.
+    appendRunEvent({
+      ts,
+      type: "allow",
+      from_node: prevNode,
+      to_node: state.currentNode,
+      tool: verticalToolName,
+      transitioned: prevNode !== state.currentNode,
+    });
     emitTelemetry("auto_allow", {
       vertical: graph.vertical,
       tool_name: verticalToolName,
@@ -2633,11 +2673,21 @@ function handlePreToolCallHook(payload) {
     return {};
   }
 
-  // Blocked by workflow enforcement.
+  // Blocked by workflow enforcement. Surface to the watch UI so deviations
+  // appear as dashed-rust ghost nodes on the diagram.
+  appendRunEvent({
+    ts,
+    type: "deviation",
+    from_node: prevNode,
+    attempted_tool: verticalToolName,
+    retry: result.retry,
+    retry_limit: graph.max_reconsider_retries,
+    reason: result.reason,
+  });
   emitTelemetry("deviation_blocked", {
     vertical: graph.vertical,
     attempted_tool: verticalToolName,
-    from_node: state.currentNode,
+    from_node: prevNode,
     retry: result.retry,
     source: "cowork",
   });
