@@ -174,7 +174,13 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.13";
+// Pre-compile tool inventory cache. The probe via `claude -p` takes ~10-15s;
+// caching for 1h means the second-and-later compile in a session reuses the
+// answer. Connector enable/disable is rare, so 1h TTL is fine in practice.
+// Refresh with `betterclaw tools refresh` or BETTERCLAW_REFRESH_TOOL_CACHE=1.
+const TOOL_CACHE_PATH = path.join(os.homedir(), ".betterclaw", "tool-cache.json");
+const TOOL_CACHE_TTL_MS = 60 * 60 * 1000;
+const BETTERCLAW_VERSION = "0.3.14";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -1012,6 +1018,88 @@ if (args[0] === "run") {
   process.exit(result.status ?? 0);
 }
 
+if (args[0] === "tools") {
+  const sub = args[1];
+
+  if (sub === "refresh") {
+    console.log();
+    console.log("  " + ui.kicker("BetterClaw · Tool probe"));
+    console.log("  " + ui.hr());
+    process.stdout.write(`  ${dim("probing")}  ${gray("(claude -p haiku, ~10-15s)…")}`);
+    const start = Date.now();
+    process.env.BETTERCLAW_REFRESH_TOOL_CACHE = "1";
+    const result = await discoverAvailableTools();
+    const ms = Date.now() - start;
+    process.stdout.write("\r" + " ".repeat(60) + "\r");
+    if (result && result.tools.length > 0) {
+      console.log(`  ${allow("✓")}  Probed ${bold(result.tools.length + " tools")} ${gray("(" + ms + "ms)")}`);
+      console.log(`  ${dim("cached at")}  ${gray(TOOL_CACHE_PATH)}`);
+      console.log();
+      process.exit(0);
+    }
+    console.error(`  ${deny("✗")}  Probe failed. Cache not updated.`);
+    console.error(`     Check that ${accent("claude")} CLI is installed and authenticated:`);
+    console.error(`        ${accent("claude --version && claude")}`);
+    console.error();
+    process.exit(2);
+  }
+
+  if (sub === "clear") {
+    if (fs.existsSync(TOOL_CACHE_PATH)) {
+      fs.unlinkSync(TOOL_CACHE_PATH);
+      console.log(`  ${allow("✓")}  Cleared ${gray(TOOL_CACHE_PATH)}`);
+    } else {
+      console.log(`  ${dim("(no cache to clear at " + TOOL_CACHE_PATH + ")")}`);
+    }
+    process.exit(0);
+  }
+
+  if (sub === "show") {
+    const cached = readToolCache();
+    if (!cached) {
+      console.log(`  ${dim("(no fresh cache; run `betterclaw tools refresh` to populate)")}`);
+      process.exit(0);
+    }
+    for (const t of cached.tools) console.log(t);
+    process.exit(0);
+  }
+
+  // Default: status summary.
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Tool inventory"));
+  console.log("  " + ui.hr());
+  const cached = readToolCache();
+  if (!cached) {
+    if (fs.existsSync(TOOL_CACHE_PATH)) {
+      console.log(`  ${dim("status")}     ${ui.chip("expired", "pending")} ${gray("(>1h old; will re-probe on next compile)")}`);
+    } else {
+      console.log(`  ${dim("status")}     ${ui.chip("empty", "pending")} ${gray("(will probe on next compile)")}`);
+    }
+    console.log(`  ${dim("path")}       ${gray(TOOL_CACHE_PATH)}`);
+    console.log();
+    console.log("  " + dim("Subcommands:"));
+    console.log(`    ${accent("betterclaw tools refresh")}  ${gray("force a probe and update the cache")}`);
+    console.log(`    ${accent("betterclaw tools show")}     ${gray("print cached tool names (one per line)")}`);
+    console.log(`    ${accent("betterclaw tools clear")}    ${gray("delete the cache file")}`);
+    console.log();
+    process.exit(0);
+  }
+  const ageMin = Math.max(1, Math.floor(cached.ageMs / 60_000));
+  const remainingMs = TOOL_CACHE_TTL_MS - cached.ageMs;
+  const remainingMin = Math.max(0, Math.floor(remainingMs / 60_000));
+  console.log(`  ${dim("status")}     ${ui.chip("fresh", "accent")} ${gray("(" + ageMin + "m old; expires in " + remainingMin + "m)")}`);
+  console.log(`  ${dim("tools")}      ${bold(cached.tools.length + " tools")} ${gray("(" + cached.tools.filter((t) => t.startsWith("mcp__")).length + " mcp__)")}`);
+  console.log(`  ${dim("cached at")}  ${gray(cached.cachedAt)}`);
+  console.log(`  ${dim("path")}       ${gray(TOOL_CACHE_PATH)}`);
+  console.log();
+  console.log("  " + dim("Subcommands:"));
+  console.log(`    ${accent("betterclaw tools refresh")}  ${gray("force a probe and update the cache")}`);
+  console.log(`    ${accent("betterclaw tools show")}     ${gray("print cached tool names (one per line)")}`);
+  console.log(`    ${accent("betterclaw tools clear")}    ${gray("delete the cache file")}`);
+  console.log();
+  process.exit(0);
+}
+
 if (args[0] === "telemetry") {
   const sub = args[1];
   if (sub === "off") {
@@ -1394,6 +1482,11 @@ function printHelp() {
   console.log(pair(`betterclaw stop`,                `Stop the running daemon`));
   console.log(pair(`betterclaw status`,              `Show daemon status (pid, socket, log path)`));
   console.log(pair(`betterclaw mcp-daemon`,          `Run daemon in foreground (stderr logs visible)`));
+  console.log(ui.section("  Tool probe (host inventory cache)"));
+  console.log(pair(`betterclaw tools`,               `Show cache state (size, age, expiry)`));
+  console.log(pair(`betterclaw tools refresh`,       `Force a fresh probe and update the cache`));
+  console.log(pair(`betterclaw tools show`,          `Print cached tool names (one per line)`));
+  console.log(pair(`betterclaw tools clear`,         `Delete the cache file`));
   console.log(ui.section("  Telemetry (local, no PII)"));
   console.log(pair(`betterclaw telemetry`,           `Show enabled/disabled + event count`));
   console.log(pair(`betterclaw telemetry dump`,      `Summary by event type / host / day`));
@@ -3635,14 +3728,32 @@ async function compileAndConfirmParagraph(paragraph) {
   // graph. Without this, the compiler relies on hardcoded connector
   // hints that drift when Cowork ships new connectors or renames tools,
   // producing graphs that reference non-existent tool names — which the
-  // runtime hook then dutifully blocks. ~1-3s with haiku.
-  process.stdout.write(`  ${dim("probing tools")}  ${gray("(claude -p haiku, ~10-15s)…")}`);
+  // runtime hook then dutifully blocks. ~10-15s on cache miss; near-zero
+  // on cache hit (1h TTL).
+  let probeResult;
+  let _probeDurationMs;
   const _probeStartMs = Date.now();
-  const availableTools = await discoverAvailableTools();
-  const _probeDurationMs = Date.now() - _probeStartMs;
-  process.stdout.write("\r" + " ".repeat(60) + "\r");
-  if (availableTools) {
-    console.log(`  ${dim("tools probed")}   ${ui.chip(`${availableTools.length} tools`, "accent")} ${gray(`(${_probeDurationMs}ms)`)}`);
+  // Show the probing message only when we'll actually hit the network.
+  // If the cache is fresh, suppress the spinner-style message to avoid
+  // flashing it for the millisecond between print and overwrite.
+  const cachedHit = process.env.BETTERCLAW_SKIP_TOOL_PROBE !== "1"
+    && process.env.BETTERCLAW_REFRESH_TOOL_CACHE !== "1"
+    && readToolCache();
+  if (!cachedHit) {
+    process.stdout.write(`  ${dim("probing tools")}  ${gray("(claude -p haiku, ~10-15s)…")}`);
+  }
+  probeResult = await discoverAvailableTools();
+  _probeDurationMs = Date.now() - _probeStartMs;
+  if (!cachedHit) process.stdout.write("\r" + " ".repeat(60) + "\r");
+
+  const availableTools = probeResult ? probeResult.tools : null;
+  if (probeResult) {
+    if (probeResult.source === "cache") {
+      const ageMin = Math.max(1, Math.floor(probeResult.ageMs / 60_000));
+      console.log(`  ${dim("tools")}          ${ui.chip(`${availableTools.length} tools`, "accent")} ${gray(`(cached ${ageMin}m ago — \`betterclaw tools refresh\` to re-probe)`)}`);
+    } else {
+      console.log(`  ${dim("tools probed")}   ${ui.chip(`${availableTools.length} tools`, "accent")} ${gray(`(${_probeDurationMs}ms, cached for 1h)`)}`);
+    }
   } else {
     const reason = process.env.BETTERCLAW_SKIP_TOOL_PROBE === "1" ? "skipped" : "failed";
     console.log(`  ${dim("tools probed")}   ${ui.chip(reason, "pending")} ${gray("falling back to hardcoded hints")}`);
@@ -3655,15 +3766,19 @@ async function compileAndConfirmParagraph(paragraph) {
   const _compileDurationMs = Date.now() - _compileStartMs;
   validateGraph(graph);
 
+  const _probeStatus = probeResult
+    ? (probeResult.source === "cache" ? "cache_hit" : "probe_ok")
+    : (process.env.BETTERCLAW_SKIP_TOOL_PROBE === "1" ? "skipped" : "failed");
   emitTelemetry("compile", {
     host: _hostId,
     duration_ms: _compileDurationMs,
     node_count: graph.nodes.length,
     edge_count: graph.edges.length,
     has_approval_gate: (graph.requires_approval?.length ?? 0) > 0,
-    probe_status: availableTools ? "ok" : (process.env.BETTERCLAW_SKIP_TOOL_PROBE === "1" ? "skipped" : "failed"),
+    probe_status: _probeStatus,
     probe_tool_count: availableTools ? availableTools.length : 0,
     probe_duration_ms: _probeDurationMs,
+    probe_cache_age_ms: probeResult?.source === "cache" ? probeResult.ageMs : 0,
   });
   maybeShowFirstRunNotice();
   maybeShowFeedbackCTA();
@@ -3693,6 +3808,31 @@ async function compileAndConfirmParagraph(paragraph) {
   return true;
 }
 
+function readToolCache() {
+  if (!fs.existsSync(TOOL_CACHE_PATH)) return null;
+  try {
+    const cache = JSON.parse(fs.readFileSync(TOOL_CACHE_PATH, "utf8"));
+    if (!cache.cached_at || !Array.isArray(cache.tools)) return null;
+    const ageMs = Date.now() - new Date(cache.cached_at).getTime();
+    if (Number.isNaN(ageMs) || ageMs < 0 || ageMs > TOOL_CACHE_TTL_MS) return null;
+    return { tools: cache.tools, ageMs, cachedAt: cache.cached_at };
+  } catch {
+    return null;
+  }
+}
+
+function writeToolCache(tools) {
+  try {
+    fs.mkdirSync(path.dirname(TOOL_CACHE_PATH), { recursive: true });
+    fs.writeFileSync(
+      TOOL_CACHE_PATH,
+      JSON.stringify({ cached_at: new Date().toISOString(), tools }, null, 2) + "\n",
+    );
+  } catch {
+    // Cache write is best-effort; failure just means next compile re-probes.
+  }
+}
+
 // Probe the host's actual tool inventory before compiling. The compiler
 // previously relied on COMMON_COWORK_CONNECTORS hints, which drift every
 // time Cowork ships a new connector or renames a tool — and when they
@@ -3700,11 +3840,17 @@ async function compileAndConfirmParagraph(paragraph) {
 // `mcp__claude_ai_Gmail__list_messages` when Cowork actually exposes
 // `mcp__claude_ai_Gmail__search_threads`). The runtime hook then
 // dutifully blocks the agent from calling the tool that *does* exist.
-// One probe via `claude -p` per compile (~1-3s with haiku) keeps the
-// compile schema honest. Returns null on any failure — probe is
-// best-effort, never blocks compile.
+// Probe via `claude -p haiku` (~10-15s) is cached for 1h so repeated
+// compiles in a session don't re-pay the latency. Returns:
+//   { tools: string[], source: "cache"|"probe", ageMs: number } | null
+// null = probe failed AND no usable cache; never blocks compile.
 async function discoverAvailableTools() {
   if (process.env.BETTERCLAW_SKIP_TOOL_PROBE === "1") return null;
+
+  if (process.env.BETTERCLAW_REFRESH_TOOL_CACHE !== "1") {
+    const cached = readToolCache();
+    if (cached) return { tools: cached.tools, source: "cache", ageMs: cached.ageMs };
+  }
 
   const probePrompt =
     `Output a JSON array of every tool name available to you in this session. Format strictly: ["tool1","tool2","tool3"]. Single line. No markdown fences. No prose. No explanation. Just the JSON array.`;
@@ -3723,8 +3869,6 @@ async function discoverAvailableTools() {
   if (result.status !== 0 || result.signal === "SIGTERM") return null;
 
   const out = (result.stdout || "").trim();
-  // Find the first JSON array in the response. Strip markdown fences just
-  // in case Claude added them despite the strict-format instruction.
   const arrayMatch = out
     .replace(/^```(?:json)?\s*/m, "")
     .replace(/```\s*$/m, "")
@@ -3734,7 +3878,8 @@ async function discoverAvailableTools() {
   try {
     const parsed = JSON.parse(arrayMatch[0]);
     if (Array.isArray(parsed) && parsed.every((s) => typeof s === "string" && s.length > 0)) {
-      return parsed;
+      writeToolCache(parsed);
+      return { tools: parsed, source: "probe", ageMs: 0 };
     }
   } catch {
     return null;

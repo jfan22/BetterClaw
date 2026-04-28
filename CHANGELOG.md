@@ -4,6 +4,32 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.14] — 2026-04-28
+
+**Theme:** cache the v0.3.13 tool probe so repeat compiles aren't waiting on it.
+
+### Added
+
+- **Tool inventory cache** at `~/.betterclaw/tool-cache.json` with a 1-hour TTL. The pre-compile probe added in v0.3.13 takes ~10-15s. Caching for 1h means the first compile in a session pays the latency, every later compile reads from disk in ~5ms. Connector enable/disable is rare enough that 1h is a safe TTL in practice.
+
+- **`betterclaw tools` subcommand.** Inspect and manage the cache:
+  - `betterclaw tools` — show cache state (count, age, expiry, path).
+  - `betterclaw tools refresh` — force a fresh probe and update the cache.
+  - `betterclaw tools show` — print cached tool names, one per line (greps cleanly).
+  - `betterclaw tools clear` — delete the cache file.
+
+- **`BETTERCLAW_REFRESH_TOOL_CACHE=1` env var.** Bypass the cache for a single compile and force a fresh probe. Useful right after enabling a new connector in claude.ai when you don't want to wait for the TTL.
+
+- **Cache hit/miss telemetry.** Compile events record `probe_status: "cache_hit" | "probe_ok" | "skipped" | "failed"` and `probe_cache_age_ms`. Helps us see how often the cache is doing its job vs. the probe is being re-paid.
+
+### Changed
+
+- Compile UI distinguishes "tools (12 tools, cached 14m ago)" from "tools probed [12 tools] (14123ms, cached for 1h)" so you can see at a glance whether you're paying the probe latency or not.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.14 @betterclaw-ai/plugin-openclaw@0.3.14 @betterclaw-ai/plugin-cowork@0.3.14`. No state migration needed — first compile after upgrade does a fresh probe to populate the cache.
+
 ## [0.3.13] — 2026-04-28
 
 **Theme:** compile against the host's *real* tool inventory, not a hardcoded hint list.
