@@ -4,6 +4,36 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.17] — 2026-04-28
+
+**Theme:** Cowork approval gates now actually pause the agent and resume it after human approval. The approval-gate demo finally lands.
+
+### Changed
+
+- **Cowork approval flow is now block-and-poll, not fire-and-forget.** Pre-v0.3.17 model: hook returned deny with "approval queued, run `betterclaw approve <id>`," agent moved on, the actual tool never dispatched (the CLI's `callBackend` was a gmail-stub from v0.2 that didn't know how to call Cowork connectors). Approving did nothing to the agent's session.
+
+  v0.3.17 model: when a `requires_approval` tool is intercepted, the hook writes `<id>.pending`, surfaces an `approval_pending` event to `run.jsonl` (so the watch UI shows a banner), and **blocks polling disk every 200ms for `<id>.approved` or `<id>.denied`** — up to 55s (just under Cowork's 60s hook timeout). When the user clicks Approve in the watch UI or runs `betterclaw approve <id>`, the sentinel appears, the hook returns `{}` (no decision = allow), and **Cowork itself dispatches the actual tool call through its verified connector** (which has the auth — the CLI doesn't need to be in the dispatch path at all). Deny → hook returns deny with "do not retry, ask user how to proceed differently." Timeout → hook returns deny with "user wasn't there, retry after approving."
+
+  This is the prerequisite for the live "approval gate stops a runaway Apollo campaign" demo. Click Approve → contacts actually get added.
+
+- **`resolveApproval` skips out-of-band dispatch for cowork-source records.** Previously every approve invocation called `dispatchApprovedTool` → `callBackend`, which on the Cowork path was a gmail-stub that emitted a misleading "Approved (stub-backed tool — no external side effect)" message. Now: if the pending record's `source === "cowork"`, write the .approved sentinel and exit cleanly with "Cowork will dispatch <tool> on the agent side." OpenClaw-source approvals still go through `dispatchApprovedTool` (correct for the Gmail-fallback path). Source is round-tripped through `run.jsonl`'s `approval_pending` event so reconstructing the record from the live log preserves it.
+
+### Added
+
+- **`waitForCoworkApproval(approvalsDir, id, timeoutMs)`**. Async helper that polls disk every 200ms for `<id>.approved` or `<id>.denied`, returns `"approved"` | `"denied"` | `"timeout"` after `timeoutMs`. Used internally by the Cowork hook.
+
+- **Approval-resolution telemetry.** Compile events now record `approve_timeout` (in addition to existing `approve` / `deny`) so we can see if 55s is enough headroom in practice, or if we need to extend.
+
+### Verified end-to-end (simulated hook + watch UI + CLI approve)
+
+1. Approve via watch UI POST `/resolve`: hook blocks ~2s, returns `{}` allow, run.jsonl shows `approval_pending` (with `source: cowork`) + `approval_resolved` (decision: approved). No stub-dispatch noise.
+2. Approve via `betterclaw approve <id>`: same result, prints "Cowork will dispatch <tool> on the agent side."
+3. Deny: hook returns deny with "do not retry" guidance, run.jsonl records `approval_resolved` with `decision: denied`.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.17 @betterclaw-ai/plugin-openclaw@0.3.17 @betterclaw-ai/plugin-cowork@0.3.17`. No state migration. Existing pending approvals in `~/.betterclaw/approvals/` carry over (the on-disk format hasn't changed).
+
 ## [0.3.16] — 2026-04-28
 
 **Theme:** wire the watch UI for Cowork users — prerequisite for the upcoming approval-gate demo.

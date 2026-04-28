@@ -180,7 +180,7 @@ const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jso
 // Refresh with `betterclaw tools refresh` or BETTERCLAW_REFRESH_TOOL_CACHE=1.
 const TOOL_CACHE_PATH = path.join(os.homedir(), ".betterclaw", "tool-cache.json");
 const TOOL_CACHE_TTL_MS = 60 * 60 * 1000;
-const BETTERCLAW_VERSION = "0.3.16";
+const BETTERCLAW_VERSION = "0.3.17";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -2090,7 +2090,30 @@ async function resolveApproval(id, decision) {
     return;
   }
 
-  // APPROVE: dispatch the tool call out-of-band against the real backend.
+  // APPROVE.
+  //
+  // Cowork-source approvals: the .approved sentinel was just written above.
+  // The Cowork hook is currently blocked polling for it (v0.3.17 model) —
+  // the hook will detect it within 200ms, return {} (allow), and Cowork
+  // itself dispatches the real tool call through its verified connector.
+  // Nothing for the CLI to do here except confirm.
+  if (record.source === "cowork") {
+    emitTelemetry("approve", {
+      vertical: record.vertical,
+      tool_name: record.tool,
+      elapsed_since_queued_ms: record.queued_at_ms ? Date.now() - record.queued_at_ms : null,
+      source: "cowork",
+    });
+    console.log();
+    console.log(`  ${allow("Approved")} ${ui.chip(record.id)} ${dim("— Cowork will dispatch " + record.tool + " on the agent side.")}`);
+    console.log();
+    return;
+  }
+
+  // OpenClaw-source: dispatch the tool call out-of-band against the real
+  // backend (Gmail MCP daemon for the gmail-fallback path; stub-summary
+  // for everything else, since OpenClaw plugin already dispatched the
+  // real call in-band before queueing).
   emitTelemetry("approve", {
     vertical: record.vertical,
     tool_name: record.tool,
@@ -2518,7 +2541,7 @@ async function runHookCommand(event) {
   let response;
   try {
     if (event === "pre-tool-call") {
-      response = handlePreToolCallHook(payload);
+      response = await handlePreToolCallHook(payload);
     } else if (event === "user-prompt-submit") {
       response = handleUserPromptSubmitHook(payload);
     } else if (event === "post-tool-call") {
@@ -2535,7 +2558,25 @@ async function runHookCommand(event) {
   process.stdout.write(JSON.stringify(response) + "\n");
 }
 
-function handlePreToolCallHook(payload) {
+// Cowork approval poller. Waits up to timeoutMs for either an .approved or
+// .denied sentinel file in the approvals dir, polling every 200ms. The
+// caller (the Cowork hook) blocks on this so that user approval directly
+// translates to "Cowork dispatches the call" — no agent retry needed,
+// no out-of-band tool invocation. Cowork's hook timeout is 60s; we cap
+// at 55s to leave a safety margin.
+async function waitForCoworkApproval(approvalsDir, id, timeoutMs = 55_000) {
+  const approvedPath = path.join(approvalsDir, `${id}.approved`);
+  const deniedPath = path.join(approvalsDir, `${id}.denied`);
+  const startMs = Date.now();
+  while (Date.now() - startMs < timeoutMs) {
+    if (fs.existsSync(approvedPath)) return "approved";
+    if (fs.existsSync(deniedPath)) return "denied";
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return "timeout";
+}
+
+async function handlePreToolCallHook(payload) {
   // Payload from Cowork PreToolUse:
   //   { session_id, tool_name, tool_input, hook_event_name, ... }
   const toolName = payload.tool_name;
@@ -2623,7 +2664,13 @@ function handlePreToolCallHook(payload) {
         };
       }
 
-      // Surface the pending approval to the watch UI's live timeline.
+      // Surface the pending approval to the watch UI's live timeline so
+      // the user sees the banner with Approve/Deny buttons. `source` is
+      // carried so resolveApproval (called from CLI or watch UI's POST
+      // /resolve) can branch correctly: cowork-source records skip the
+      // out-of-band dispatchApprovedTool path because the Cowork hook is
+      // already blocked polling for the .approved sentinel and Cowork
+      // itself dispatches the call once we return allow.
       appendRunEvent({
         ts,
         type: "approval_pending",
@@ -2631,9 +2678,77 @@ function handlePreToolCallHook(payload) {
         node: state.currentNode,
         tool: verticalToolName,
         params: toolInput,
+        source: "cowork",
       });
 
       emitTelemetry("approve_queued", {
+        vertical: graph.vertical,
+        tool_name: verticalToolName,
+        source: "cowork",
+      });
+
+      // Block here polling for the user's decision. Cowork's hook timeout
+      // is 60s; we cap at 55s to leave headroom for the response write.
+      // This is the v0.3.17 model: hook holds the call, user clicks
+      // Approve in the watch UI (or runs `betterclaw approve <id>`),
+      // the .approved sentinel appears, the hook returns {} (allow), and
+      // Cowork dispatches the actual tool call through its connector
+      // (which has the real auth — the CLI doesn't need to be in the
+      // dispatch path at all).
+      const verdict = await waitForCoworkApproval(APPROVALS_DIR, approvalId, 55_000);
+      const resolvedTs = new Date().toISOString();
+
+      if (verdict === "approved") {
+        appendRunEvent({
+          ts: resolvedTs,
+          type: "approval_resolved",
+          id: approvalId,
+          decision: "approved",
+        });
+        emitTelemetry("approve", {
+          vertical: graph.vertical,
+          tool_name: verticalToolName,
+          elapsed_since_queued_ms: Date.now() - approvalRecord.queued_at_ms,
+          source: "cowork",
+        });
+        // Empty response = no enforcement decision = Cowork dispatches.
+        return {};
+      }
+
+      if (verdict === "denied") {
+        appendRunEvent({
+          ts: resolvedTs,
+          type: "approval_resolved",
+          id: approvalId,
+          decision: "denied",
+        });
+        emitTelemetry("deny", {
+          vertical: graph.vertical,
+          tool_name: verticalToolName,
+          elapsed_since_queued_ms: Date.now() - approvalRecord.queued_at_ms,
+          source: "cowork",
+        });
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason:
+              `Approval denied by user · id=${approvalId} · tool=${verticalToolName}\n` +
+              `Do not retry this exact call. Ask the user how to proceed differently.`,
+          },
+        };
+      }
+
+      // Timeout — user wasn't there. Tell the agent to ask the user to
+      // approve out-of-band, then retry the same tool call (which will
+      // re-queue under a new id).
+      appendRunEvent({
+        ts: resolvedTs,
+        type: "approval_resolved",
+        id: approvalId,
+        decision: "timeout",
+      });
+      emitTelemetry("approve_timeout", {
         vertical: graph.vertical,
         tool_name: verticalToolName,
         source: "cowork",
@@ -2643,14 +2758,10 @@ function handlePreToolCallHook(payload) {
           hookEventName: "PreToolUse",
           permissionDecision: "deny",
           permissionDecisionReason:
-            `Approval required · id=${approvalId} · tool=${verticalToolName}\n` +
-            `This call is queued for out-of-band approval. Ask the user to:\n` +
-            `  betterclaw show ${approvalId}      (inspect the pending call)\n` +
-            `  betterclaw approve ${approvalId}   (dispatch it)\n` +
-            `  betterclaw deny ${approvalId}      (cancel it)\n` +
-            `If approved, the CLI will call the real backend; the result lands ` +
-            `in the user's real state (e.g. Gmail Drafts folder). The agent ` +
-            `turn can continue without waiting.`,
+            `Approval timed out (55s) · id=${approvalId} · tool=${verticalToolName}\n` +
+            `User wasn't available to approve. Ask the user to approve via ` +
+            `the live view (\`betterclaw view --watch\`) or \`betterclaw approve ${approvalId}\`, ` +
+            `then retry the tool call.`,
         },
       };
     }
