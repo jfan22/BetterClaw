@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "railway": {
+      "command": "node",
+      "args": ["./demo/railway-incident/server.mjs"]
+    }
+  }
+}
