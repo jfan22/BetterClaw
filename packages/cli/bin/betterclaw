@@ -174,7 +174,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.12";
+const BETTERCLAW_VERSION = "0.3.13";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -3630,8 +3630,26 @@ async function compileAndConfirmParagraph(paragraph) {
 
   const _hostId = detectHost();
   console.log(`  ${dim("host")}           ${ui.chip(_hostId, "accent")}`);
+
+  // Probe the host for the real tool inventory before generating the
+  // graph. Without this, the compiler relies on hardcoded connector
+  // hints that drift when Cowork ships new connectors or renames tools,
+  // producing graphs that reference non-existent tool names — which the
+  // runtime hook then dutifully blocks. ~1-3s with haiku.
+  process.stdout.write(`  ${dim("probing tools")}  ${gray("(claude -p haiku, ~10-15s)…")}`);
+  const _probeStartMs = Date.now();
+  const availableTools = await discoverAvailableTools();
+  const _probeDurationMs = Date.now() - _probeStartMs;
+  process.stdout.write("\r" + " ".repeat(60) + "\r");
+  if (availableTools) {
+    console.log(`  ${dim("tools probed")}   ${ui.chip(`${availableTools.length} tools`, "accent")} ${gray(`(${_probeDurationMs}ms)`)}`);
+  } else {
+    const reason = process.env.BETTERCLAW_SKIP_TOOL_PROBE === "1" ? "skipped" : "failed";
+    console.log(`  ${dim("tools probed")}   ${ui.chip(reason, "pending")} ${gray("falling back to hardcoded hints")}`);
+  }
+
   console.log(`  ${dim("compiling via")}  ${accent("claude -p")} ${gray("(model=opus)")}`);
-  const prompt = buildCompilePrompt(paragraph);
+  const prompt = buildCompilePrompt(paragraph, availableTools);
   const _compileStartMs = Date.now();
   const graph = compileWithClaude(prompt);
   const _compileDurationMs = Date.now() - _compileStartMs;
@@ -3643,6 +3661,9 @@ async function compileAndConfirmParagraph(paragraph) {
     node_count: graph.nodes.length,
     edge_count: graph.edges.length,
     has_approval_gate: (graph.requires_approval?.length ?? 0) > 0,
+    probe_status: availableTools ? "ok" : (process.env.BETTERCLAW_SKIP_TOOL_PROBE === "1" ? "skipped" : "failed"),
+    probe_tool_count: availableTools ? availableTools.length : 0,
+    probe_duration_ms: _probeDurationMs,
   });
   maybeShowFirstRunNotice();
   maybeShowFeedbackCTA();
@@ -3670,6 +3691,55 @@ async function compileAndConfirmParagraph(paragraph) {
   fs.writeFileSync(PARAGRAPH_PATH, paragraph + "\n");
   console.log(`  ${allow("✓")}  Written to ${gray(GRAPH_PATH)}`);
   return true;
+}
+
+// Probe the host's actual tool inventory before compiling. The compiler
+// previously relied on COMMON_COWORK_CONNECTORS hints, which drift every
+// time Cowork ships a new connector or renames a tool — and when they
+// drift, the compiler emits graphs referencing non-existent tools (e.g.
+// `mcp__claude_ai_Gmail__list_messages` when Cowork actually exposes
+// `mcp__claude_ai_Gmail__search_threads`). The runtime hook then
+// dutifully blocks the agent from calling the tool that *does* exist.
+// One probe via `claude -p` per compile (~1-3s with haiku) keeps the
+// compile schema honest. Returns null on any failure — probe is
+// best-effort, never blocks compile.
+async function discoverAvailableTools() {
+  if (process.env.BETTERCLAW_SKIP_TOOL_PROBE === "1") return null;
+
+  const probePrompt =
+    `Output a JSON array of every tool name available to you in this session. Format strictly: ["tool1","tool2","tool3"]. Single line. No markdown fences. No prose. No explanation. Just the JSON array.`;
+
+  const result = spawnSync(
+    "claude",
+    ["-p", "--output-format", "text", "--model", "haiku"],
+    winSpawnOpts({
+      input: probePrompt,
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: 60_000,
+    }),
+  );
+
+  if (result.status !== 0 || result.signal === "SIGTERM") return null;
+
+  const out = (result.stdout || "").trim();
+  // Find the first JSON array in the response. Strip markdown fences just
+  // in case Claude added them despite the strict-format instruction.
+  const arrayMatch = out
+    .replace(/^```(?:json)?\s*/m, "")
+    .replace(/```\s*$/m, "")
+    .match(/\[[\s\S]*\]/);
+  if (!arrayMatch) return null;
+
+  try {
+    const parsed = JSON.parse(arrayMatch[0]);
+    if (Array.isArray(parsed) && parsed.every((s) => typeof s === "string" && s.length > 0)) {
+      return parsed;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 // Resolve the BetterClaw Cowork plugin install directory. Probed in order:
@@ -3705,10 +3775,25 @@ function findPluginCoworkPath() {
   return null;
 }
 
-function buildCompilePrompt(paragraph) {
-  const connectorHints = COMMON_COWORK_CONNECTORS
-    .map((c) => `- ${c.prefix}<action>  (e.g. ${c.actions_hint})`)
-    .join("\n");
+function buildCompilePrompt(paragraph, availableTools) {
+  let toolSection;
+  if (Array.isArray(availableTools) && availableTools.length > 0) {
+    // Real tool inventory probed from the host. Use exact names — this is
+    // ground truth for what the agent will actually have at runtime.
+    toolSection = `AVAILABLE TOOLS — these are the EXACT tools the agent will have at runtime. Use names verbatim from this list. Do NOT invent tool names not in the list:
+${availableTools.map((t) => `- ${t}`).join("\n")}`;
+  } else {
+    // Probe failed or skipped. Fall back to hint patterns. The compiler
+    // does its best, but tool names may not match the host's actual
+    // schema; runtime enforcement will surface mismatches.
+    const connectorHints = COMMON_COWORK_CONNECTORS
+      .map((c) => `- ${c.prefix}<action>  (e.g. ${c.actions_hint})`)
+      .join("\n");
+    toolSection = `TOOL NAMES — use concrete, host-provided names. Common Anthropic-connector patterns (HINTS, may not match the host's exact schema):
+${connectorHints}
+
+User-installed MCP servers expose their own tools as \`mcp__<server_name>__<action>\` (e.g. \`mcp__filesystem__read_file\`). Pick names that fit the user's paragraph; the actual availability is validated at runtime when the agent calls the tool. If the user clearly references an action (send email, schedule meeting, search contacts), pick the concrete tool name that performs it.`;
+  }
 
   return `You are a workflow compiler for the BetterClaw agent-guardrail system.
 
@@ -3727,17 +3812,16 @@ SCHEMA (return exactly this shape, nothing else):
   ]
 }
 
-TOOL NAMES — use concrete, host-provided names. Common Anthropic-connector patterns:
-${connectorHints}
-
-User-installed MCP servers expose their own tools as \`mcp__<server_name>__<action>\` (e.g. \`mcp__filesystem__read_file\`). Pick names that fit the user's paragraph; the actual availability is validated at runtime when the agent calls the tool. If the user clearly references an action (send email, schedule meeting, search contacts), pick the concrete tool name that performs it.
+${toolSection}
 
 requires_approval lists tools that require human approval mid-run. Include a tool here if the paragraph implies manual review — phrases like "let me approve", "ask me first", "check with me" — especially around sending, deleting, posting, purchasing, or any irreversible action. Empty array [] if no approval needed.
 
 CRITICAL — approval gate placement: when the user asks for approval before an irreversible action, requires_approval MUST contain the IRREVERSIBLE tool, NOT a preceding draft/preview tool. Drafts are reversible by definition (you can edit or delete them); sends are not. Examples:
-- "let me approve before sending the email" → gate the SEND tool (e.g. mcp__claude_ai_Gmail__send_email), not the draft tool
+- "let me approve before sending the email" → gate the SEND tool, not the draft tool
 - "check with me before posting" → gate the POST tool, not the compose tool
 - "ask before purchasing" → gate the PURCHASE tool, not the cart tool
+
+If the AVAILABLE TOOLS list does not include an irreversible-action tool that the paragraph requires (for example, if Gmail only exposes \`create_draft\` and no \`send\` tool), the workflow MUST end at the draft step — do NOT invent a send tool. The user completes the action manually outside the agent.
 
 RULES:
 1. Keep the graph small: 2 to 5 nodes.

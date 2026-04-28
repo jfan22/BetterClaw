@@ -4,6 +4,34 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.13] — 2026-04-28
+
+**Theme:** compile against the host's *real* tool inventory, not a hardcoded hint list.
+
+### Fixed
+
+- **Compiler no longer hallucinates tool names that don't exist.** Before this release, BetterClaw built compile prompts from a hardcoded `COMMON_COWORK_CONNECTORS` list. When Cowork's actual schema diverged from that list — for example, Gmail's real tools are `search_threads`, `get_thread`, `create_draft`, `list_drafts` (not the previously-hinted `list_messages`, `get_message`, `send_email`) — the compiler dutifully invented graphs around the wrong names. The runtime hook then correctly blocked the agent from calling the tools that *do* exist, leaving the user stuck.
+
+  Symptom (real example from v0.3.12): user asks `betterclaw chat "summarize my inbox"`, the compiled `list_inbox` node demands `mcp__claude_ai_Gmail__list_messages`, agent reaches for `mcp__claude_ai_Gmail__search_threads` (the tool that exists), hook blocks. No path forward.
+
+### Added
+
+- **Pre-compile tool probe.** Before generating the graph, BetterClaw spawns `claude -p --model haiku` with a strict-format prompt that asks for a JSON array of every tool name available in the user's session. The result becomes the ground-truth tool inventory fed into the compile prompt — under "AVAILABLE TOOLS — these are the EXACT tools the agent will have at runtime." Adds ~1-3s to compile. Uses haiku (cheap, fast).
+
+  Probe is best-effort. If it fails (network, timeout, malformed JSON), compile falls back to the hardcoded hints with a clear "probe failed" UI indicator. Compile never blocks on probe failure.
+
+- **`BETTERCLAW_SKIP_TOOL_PROBE=1` env var.** Skips the probe and falls back to hints immediately. Useful for CI, offline environments, scripted compile flows, and debugging.
+
+- **Probe telemetry.** Compile events now record `probe_status` (ok/failed/skipped), `probe_tool_count`, and `probe_duration_ms`. Helps us track hint-list drift over time.
+
+### Changed
+
+- **Approval-gate placement guidance updated.** When the AVAILABLE TOOLS list lacks an irreversible-action tool that the paragraph implies (e.g., Gmail exposes `create_draft` but no `send` tool), the compiler is instructed to end the workflow at the draft step rather than invent a non-existent send tool. The user completes the action manually.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.13 @betterclaw-ai/plugin-openclaw@0.3.13 @betterclaw-ai/plugin-cowork@0.3.13`. No state migration needed.
+
 ## [0.3.12] — 2026-04-26
 
 **Theme:** one-shot `betterclaw chat` — compile + open Claude in a single command.
