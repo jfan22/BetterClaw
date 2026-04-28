@@ -4,6 +4,30 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.12] — 2026-04-26
+
+**Theme:** one-shot `betterclaw chat` — compile + open Claude in a single command.
+
+### Added
+
+- **`betterclaw chat "<paragraph>"`** subcommand. Compiles the paragraph, prompts y/N to approve the graph, then spawns `claude --plugin-dir <plugin-cowork>` with stdio inherited so the user is dropped straight into an interactive Claude session with BetterClaw's enforcement plugin already loaded. Removes the friction of running BetterClaw and the Claude CLI as two separate steps.
+
+  Plugin-cowork is auto-resolved in this order: `BETTERCLAW_PLUGIN_COWORK` env var → `<repo>/packages/plugin-cowork` (dev mode) → `$(npm root -g)/@betterclaw-ai/plugin-cowork`. Surfaces a clear install hint if none exist.
+
+- **`BETTERCLAW_PLUGIN_COWORK` env var.** Override the plugin-cowork path for non-standard installs (custom npm prefix, vendored copies, etc.).
+
+### Changed
+
+- Help text reorders the quick-start example to lead with `betterclaw chat` (the recommended path for Cowork users), with the two-step compile/run flow shown as the alternative.
+
+### Skipped
+
+- v0.3.11 was a CI/lockfile fix tag with no published packages. v0.3.12 is the next published version on npm.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.12 @betterclaw-ai/plugin-openclaw@0.3.12 @betterclaw-ai/plugin-cowork@0.3.12`. No state migration needed.
+
 ## [0.3.10] — 2026-04-27
 
 **Theme:** Cowork install becomes one-line; cross-platform hook shim; clearer next-step guidance.

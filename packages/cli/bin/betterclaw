@@ -174,7 +174,7 @@ const HOOK_HISTORY_MAX_AGE_HOURS = 24;
 const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
 const TELEMETRY_CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
 const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
-const BETTERCLAW_VERSION = "0.3.10";
+const BETTERCLAW_VERSION = "0.3.12";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -1050,62 +1050,65 @@ if (args[0] === "telemetry") {
   process.exit(0);
 }
 
+// Single-shot path: compile + confirm + spawn Claude with the Cowork plugin
+// loaded, all in one command. Removes the friction of running BetterClaw and
+// the Claude CLI as separate steps.
+if (args[0] === "chat") {
+  const chatParagraph = args.slice(1).join(" ").trim();
+  if (!chatParagraph) {
+    console.error("Usage: betterclaw chat \"<paragraph>\"");
+    console.error("       Compiles the paragraph + opens Claude with the BetterClaw plugin loaded.");
+    process.exit(1);
+  }
+
+  const ok = await compileAndConfirmParagraph(chatParagraph);
+  if (!ok) {
+    console.log("\nAborted — graph not written. Re-run with a different paragraph to try again.");
+    process.exit(0);
+  }
+
+  const pluginPath = findPluginCoworkPath();
+  if (!pluginPath) {
+    console.error();
+    console.error(`  ${deny("✗")}  ${bold("plugin-cowork not found.")} \`betterclaw chat\` needs the Cowork plugin installed.`);
+    console.error();
+    console.error(`     Install it:`);
+    console.error(`        ${accent("npm install -g @betterclaw-ai/plugin-cowork")}`);
+    console.error();
+    console.error(`     Or point to a local copy via ${gray("BETTERCLAW_PLUGIN_COWORK=<dir>")}.`);
+    console.error();
+    process.exit(2);
+  }
+
+  const claudeCheck = spawnSync("claude", ["--version"], winSpawnOpts({ encoding: "utf8" }));
+  if (claudeCheck.status !== 0 || claudeCheck.error?.code === "ENOENT") {
+    console.error();
+    console.error(`  ${deny("✗")}  ${bold("\`claude\` CLI not found.")} \`betterclaw chat\` launches Claude after compile.`);
+    console.error(`     Install: ${accent("npm install -g @anthropic-ai/claude-code")}`);
+    console.error();
+    process.exit(2);
+  }
+
+  console.log();
+  console.log(`  ${dim("plugin")}  ${gray(pluginPath)}`);
+  console.log(`  ${dim("ask Claude:")}  ${accent(chatParagraph)}`);
+  console.log();
+  const result = spawnSync("claude", ["--plugin-dir", pluginPath], winSpawnOpts({ stdio: "inherit" }));
+  process.exit(result.status ?? 0);
+}
+
 const paragraph = args.join(" ").trim();
 if (!paragraph) {
   console.error("Usage: betterclaw \"<paragraph>\"");
   process.exit(1);
 }
 
-preflightCheck();
-
-console.log();
-console.log("  " + ui.kicker("BetterClaw · Compile"));
-console.log("  " + ui.hr());
-
-const _hostId = detectHost();
-console.log(`  ${dim("host")}           ${ui.chip(_hostId, "accent")}`);
-console.log(`  ${dim("compiling via")}  ${accent("claude -p")} ${gray("(model=opus)")}`);
-const prompt = buildCompilePrompt(paragraph);
-const _compileStartMs = Date.now();
-const graph = compileWithClaude(prompt);
-const _compileDurationMs = Date.now() - _compileStartMs;
-validateGraph(graph);
-
-emitTelemetry("compile", {
-  host: _hostId,
-  duration_ms: _compileDurationMs,
-  node_count: graph.nodes.length,
-  edge_count: graph.edges.length,
-  has_approval_gate: (graph.requires_approval?.length ?? 0) > 0,
-});
-maybeShowFirstRunNotice();
-maybeShowFeedbackCTA();
-
-const approvals = Array.isArray(graph.requires_approval) ? graph.requires_approval : [];
-console.log();
-console.log("  " + bold("Compiled graph"));
-console.log(`  ${dim("entry           ")} ${graph.entry}`);
-console.log(`  ${dim("nodes           ")} ${graph.nodes.length}  ${gray("(" + graph.nodes.map((n) => n.id).join(", ") + ")")}`);
-console.log(`  ${dim("edges           ")} ${graph.edges.length}`);
-console.log(`  ${dim("max retries     ")} ${graph.max_reconsider_retries ?? 3}`);
-console.log(
-  `  ${dim("requires approval")} ${
-    approvals.length > 0
-      ? approvals.map((t) => ui.chip(t, "pending")).join(" ")
-      : gray("none — all tool calls autorun")
-  }`,
-);
-console.log();
-
-const approved = await renderAndConfirm(graph, paragraph);
-if (!approved) {
+const _approved = await compileAndConfirmParagraph(paragraph);
+if (!_approved) {
   console.log("\nAborted — graph not written. Re-run with a different paragraph to try again.");
   process.exit(0);
 }
 
-fs.writeFileSync(GRAPH_PATH, JSON.stringify(graph, null, 2) + "\n");
-fs.writeFileSync(PARAGRAPH_PATH, paragraph + "\n");
-console.log(`  ${allow("✓")}  Written to ${gray(GRAPH_PATH)}`);
 console.log();
 console.log("  " + dim("Next — depends on which agent runtime you use:"));
 console.log();
@@ -1113,6 +1116,7 @@ console.log("  " + bold("Cowork (Claude Desktop):"));
 console.log("    Open Claude Desktop and ask the agent to do your task.");
 console.log("    The Cowork plugin enforces the active graph automatically.");
 console.log("    " + dim("Setup once: ") + accent("npm install -g @betterclaw-ai/plugin-cowork") + dim(" then ") + accent("claude --plugin-dir <plugin-path>"));
+console.log("    " + dim("Or one-shot: ") + accent(`betterclaw chat "<paragraph>"`) + dim(" — compile + open Claude in one command."));
 console.log();
 console.log("  " + bold("OpenClaw (CLI):"));
 console.log("    " + accent(`betterclaw run "<your task>"`));
@@ -1374,6 +1378,7 @@ function printHelp() {
   console.log("  " + ui.hr());
   console.log(ui.section("  Run"));
   console.log(pair(`betterclaw "<paragraph>"`,       `Compile a paragraph to active-graph.json`));
+  console.log(pair(`betterclaw chat "<paragraph>"`,  `Compile + open Claude with the BetterClaw plugin (Cowork)`));
   console.log(pair(`betterclaw run "<task>"`,        `Auto-start daemon + run \`openclaw agent --local -m <task>\``));
   console.log(pair(`betterclaw view`,                `Render a replay-diff of the last agent run`));
   console.log(pair(`betterclaw view --watch`,        `Live HTTP server + browser view (approve / deny buttons)`));
@@ -1416,8 +1421,12 @@ function printHelp() {
   console.log(desc(`  • OpenClaw: install MCP servers, OR run \`betterclaw connect gmail\` for the fallback`));
   console.log();
   console.log(desc(`Then compile + run any task in plain English:`));
-  console.log(desc("    " + accent(`betterclaw "schedule a meeting with the team next Tuesday and email the agenda"`)));
-  console.log(desc("    " + accent(`betterclaw run "<your-paragraph>"`)));
+  console.log(desc("    " + accent(`betterclaw chat "schedule a meeting with the team next Tuesday and email the agenda"`)));
+  console.log(desc("    " + dim("Compiles the graph and drops you into Claude with the plugin loaded — single command.")));
+  console.log();
+  console.log(desc(`Two-step (compile only, run later):`));
+  console.log(desc("    " + accent(`betterclaw "<your-paragraph>"`) + dim("       # compile") ));
+  console.log(desc("    " + accent(`betterclaw run "<your-paragraph>"`) + dim("    # run via OpenClaw")));
   console.log();
   console.log(desc(`Tutorial demo (no external setup needed):`));
   console.log(desc("    " + accent(`BETTERCLAW_DEMO=1 betterclaw "find a wireless mouse under $50, compare the top two"`)));
@@ -3606,6 +3615,94 @@ function preflightCheck() {
     }
     process.exit(2);
   }
+}
+
+// Compile a paragraph into a graph, render the Mermaid preview, prompt y/N,
+// and persist the graph + paragraph if approved. Returns true if the user
+// approved (graph written), false if declined. Used by both the bare
+// `betterclaw "<paragraph>"` path and `betterclaw chat "<paragraph>"`.
+async function compileAndConfirmParagraph(paragraph) {
+  preflightCheck();
+
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Compile"));
+  console.log("  " + ui.hr());
+
+  const _hostId = detectHost();
+  console.log(`  ${dim("host")}           ${ui.chip(_hostId, "accent")}`);
+  console.log(`  ${dim("compiling via")}  ${accent("claude -p")} ${gray("(model=opus)")}`);
+  const prompt = buildCompilePrompt(paragraph);
+  const _compileStartMs = Date.now();
+  const graph = compileWithClaude(prompt);
+  const _compileDurationMs = Date.now() - _compileStartMs;
+  validateGraph(graph);
+
+  emitTelemetry("compile", {
+    host: _hostId,
+    duration_ms: _compileDurationMs,
+    node_count: graph.nodes.length,
+    edge_count: graph.edges.length,
+    has_approval_gate: (graph.requires_approval?.length ?? 0) > 0,
+  });
+  maybeShowFirstRunNotice();
+  maybeShowFeedbackCTA();
+
+  const approvals = Array.isArray(graph.requires_approval) ? graph.requires_approval : [];
+  console.log();
+  console.log("  " + bold("Compiled graph"));
+  console.log(`  ${dim("entry           ")} ${graph.entry}`);
+  console.log(`  ${dim("nodes           ")} ${graph.nodes.length}  ${gray("(" + graph.nodes.map((n) => n.id).join(", ") + ")")}`);
+  console.log(`  ${dim("edges           ")} ${graph.edges.length}`);
+  console.log(`  ${dim("max retries     ")} ${graph.max_reconsider_retries ?? 3}`);
+  console.log(
+    `  ${dim("requires approval")} ${
+      approvals.length > 0
+        ? approvals.map((t) => ui.chip(t, "pending")).join(" ")
+        : gray("none — all tool calls autorun")
+    }`,
+  );
+  console.log();
+
+  const approved = await renderAndConfirm(graph, paragraph);
+  if (!approved) return false;
+
+  fs.writeFileSync(GRAPH_PATH, JSON.stringify(graph, null, 2) + "\n");
+  fs.writeFileSync(PARAGRAPH_PATH, paragraph + "\n");
+  console.log(`  ${allow("✓")}  Written to ${gray(GRAPH_PATH)}`);
+  return true;
+}
+
+// Resolve the BetterClaw Cowork plugin install directory. Probed in order:
+//   1. BETTERCLAW_PLUGIN_COWORK env var (escape hatch for non-standard installs)
+//   2. <repo>/packages/plugin-cowork (source-tree dev mode)
+//   3. <npm-root-g>/@betterclaw-ai/plugin-cowork (the npm-install path)
+// Returns the absolute path or null if none exist.
+function findPluginCoworkPath() {
+  const looksLikePlugin = (dir) =>
+    fs.existsSync(path.join(dir, ".claude-plugin")) || fs.existsSync(path.join(dir, "package.json"));
+
+  if (process.env.BETTERCLAW_PLUGIN_COWORK) {
+    const envPath = process.env.BETTERCLAW_PLUGIN_COWORK;
+    if (fs.existsSync(envPath) && looksLikePlugin(envPath)) return path.resolve(envPath);
+  }
+
+  const devCandidate = path.resolve(REPO_ROOT, "packages", "plugin-cowork");
+  if (fs.existsSync(devCandidate) && looksLikePlugin(devCandidate)) return devCandidate;
+
+  try {
+    const npmRoot = spawnSync("npm", ["root", "-g"], winSpawnOpts({ encoding: "utf8" }));
+    if (npmRoot.status === 0) {
+      const root = (npmRoot.stdout || "").trim();
+      if (root) {
+        const candidate = path.join(root, "@betterclaw-ai", "plugin-cowork");
+        if (fs.existsSync(candidate) && looksLikePlugin(candidate)) return candidate;
+      }
+    }
+  } catch {
+    // npm may not be on PATH in some shells; fall through to null.
+  }
+
+  return null;
 }
 
 function buildCompilePrompt(paragraph) {
