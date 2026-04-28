@@ -33,6 +33,60 @@ export function loadGraph(graphPath) {
   return graph;
 }
 
+// BFS from fromNodeId looking for a concrete destination where toolName is
+// allowed, walking through empty-allowed-tools "thinking" nodes as
+// transparent transits. The compile prompt explicitly tells the model that
+// pure-LLM-thinking nodes (allowed_tools: []) advance by calling a tool
+// from a reachable next node, so the runtime must honor that contract by
+// hopping past empty nodes — otherwise the empty node is a dead end.
+//
+// Stops at non-empty-tools nodes: those are concrete destinations or
+// non-matches, never transparent.
+function findReachableViaEmptyTransits(graph, fromNodeId, toolName) {
+  const visited = new Set([fromNodeId]);
+  const candidates = [];
+  const queue = [...(graph._outgoing.get(fromNodeId) ?? [])];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const node = graph._byId.get(id);
+    if (!node) continue;
+    const tools = node.allowed_tools ?? [];
+    if (tools.length === 0) {
+      for (const next of graph._outgoing.get(id) ?? []) {
+        if (!visited.has(next)) queue.push(next);
+      }
+    } else if (tools.includes(toolName)) {
+      candidates.push(id);
+    }
+  }
+  candidates.sort();
+  return candidates[0] ?? null;
+}
+
+function summarizeReachableDestinations(graph, fromNodeId) {
+  const visited = new Set([fromNodeId]);
+  const reachable = [];
+  const queue = [...(graph._outgoing.get(fromNodeId) ?? [])];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const node = graph._byId.get(id);
+    if (!node) continue;
+    const tools = node.allowed_tools ?? [];
+    if (tools.length === 0) {
+      for (const next of graph._outgoing.get(id) ?? []) {
+        if (!visited.has(next)) queue.push(next);
+      }
+    } else {
+      reachable.push({ id, tools });
+    }
+  }
+  return reachable;
+}
+
 // Enforce one tool call. Returns either:
 //   { decision: "allow", params }           — caller forwards the call
 //   { decision: "block", reason, retry }    — caller returns block: true
@@ -52,35 +106,29 @@ export function enforce(graph, state, toolName, params) {
     return { decision: "allow", params };
   }
 
-  // 2. Is there a reachable node where this tool IS allowed?
-  const outgoing = graph._outgoing.get(state.currentNode) ?? [];
-  const reachableNextIds = outgoing
-    .filter((id) => graph._byId.get(id)?.allowed_tools.includes(toolName))
-    .sort(); // already lexicographically sorted, defensive
-
-  if (reachableNextIds.length > 0) {
-    // Advance to the lexicographically smallest matching next node.
-    state.currentNode = reachableNextIds[0];
+  // 2. Is there a reachable destination (transitively, through empty-tools
+  //    transit nodes) where this tool IS allowed?
+  const destination = findReachableViaEmptyTransits(graph, state.currentNode, toolName);
+  if (destination) {
+    state.currentNode = destination;
     state.reconsiderCounter = 0;
     return { decision: "allow", params };
   }
 
-  // 3. Deviation. Build a maximally helpful error text.
+  // 3. Deviation. Build a maximally helpful error text — list ALL
+  //    transit-reachable destinations, not just immediate successors,
+  //    so the agent sees its full move options.
   state.reconsiderCounter += 1;
   const allowedHere = currentNode.allowed_tools.join(", ") || "(none)";
-  const nextNodes = outgoing
-    .map((id) => {
-      const node = graph._byId.get(id);
-      if (!node) return `${id} (unknown)`;
-      const tools = node.allowed_tools.join(", ") || "(none)";
-      return `${id} [${tools}]`;
-    })
-    .join("; ") || "(none)";
+  const reachable = summarizeReachableDestinations(graph, state.currentNode);
+  const reachableSummary = reachable.length > 0
+    ? reachable.map(({ id, tools }) => `${id} [${tools.join(", ")}]`).join("; ")
+    : "(none)";
 
   const reason =
     `DEVIATION: tool '${toolName}' is not allowed in node '${currentNode.id}' ` +
     `(${currentNode.purpose}). Allowed tools in this node: [${allowedHere}]. ` +
-    `Allowed next nodes and their tools: [${nextNodes}]. ` +
+    `Reachable next nodes (transitively through empty-tools nodes) and their tools: [${reachableSummary}]. ` +
     `Pick one of those tools and try again.`;
 
   if (state.reconsiderCounter > graph.max_reconsider_retries) {

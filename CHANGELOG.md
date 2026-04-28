@@ -4,6 +4,32 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.15] — 2026-04-28
+
+**Theme:** fix the dead-end-empty-tools-node bug. The hook now walks transitively through pure-LLM-thinking nodes.
+
+### Fixed
+
+- **Empty-allowed-tools nodes were dead ends.** The compile prompt explicitly tells the model that a `summarize`/`classify`/`plan` node with `allowed_tools: []` is a pure-thinking step that the agent transits by calling a tool from a reachable next node. The hook didn't honor that contract: its reachable-next check only looked at *immediate* successors and required a non-empty allowed_tools match. So a workflow like:
+
+  ```
+  read_thread [get_thread] → summarize_and_classify [] → draft_reply [create_draft]
+  ```
+
+  was unworkable. From `read_thread`, the agent could not call `create_draft` — the only successor was `summarize_and_classify` with `(none)` tools, which never matches anything. The agent could not advance through `summarize_and_classify` either, because that's a thinking step with no tool call to advance it. Stuck.
+
+  Fix: the enforce path now does a BFS from the current node, walking *through* empty-tools nodes as transparent transits, and looks for any concrete destination where the called tool IS allowed. Stops at non-empty-tools nodes — those are concrete steps, not transparent. When a transit-reachable destination is found, current_node advances directly to it (skipping the empty-tools nodes in between).
+
+  Verified end-to-end: `betterclaw chat "summarize my inbox and create draft replies..."` now compiles and runs through to the draft step on Cowork.
+
+### Changed
+
+- **Deviation message now lists transitively-reachable destinations** instead of just immediate successors. Previously the agent saw `Next nodes: [summarize_and_classify [(none)]]` and concluded "I have no moves" — useless. Now it sees `Reachable next: [draft_reply [mcp__claude_ai_Gmail__create_draft]; ...]` so it knows what tools are actually playable. Same fix in both `packages/cli/bin/betterclaw` (Cowork hook path) and `packages/plugin-openclaw/workflow.mjs` (OpenClaw plugin).
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.15 @betterclaw-ai/plugin-openclaw@0.3.15 @betterclaw-ai/plugin-cowork@0.3.15`. Existing graphs that hit the dead-end pattern will now run correctly without recompile.
+
 ## [0.3.14] — 2026-04-28
 
 **Theme:** cache the v0.3.13 tool probe so repeat compiles aren't waiting on it.

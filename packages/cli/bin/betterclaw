@@ -180,7 +180,7 @@ const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jso
 // Refresh with `betterclaw tools refresh` or BETTERCLAW_REFRESH_TOOL_CACHE=1.
 const TOOL_CACHE_PATH = path.join(os.homedir(), ".betterclaw", "tool-cache.json");
 const TOOL_CACHE_TTL_MS = 60 * 60 * 1000;
-const BETTERCLAW_VERSION = "0.3.14";
+const BETTERCLAW_VERSION = "0.3.15";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -2271,6 +2271,67 @@ function loadWorkflowGraph(graphPath) {
   return graph;
 }
 
+// BFS from fromNodeId looking for a concrete destination where toolName is
+// allowed, walking through empty-allowed-tools "thinking" nodes as
+// transparent transits. The compile prompt explicitly tells the model that
+// pure-LLM-thinking nodes (allowed_tools: []) are advanced through by
+// calling a tool from a reachable next node, so the runtime must honor
+// that contract by hopping past empty nodes — otherwise the empty node is
+// a dead end and the workflow gets stuck (v0.3.14 bug: read_thread →
+// summarize_and_classify (empty) → draft_reply made create_draft
+// unreachable from read_thread).
+//
+// Stops at non-empty-tools nodes: those are concrete destinations or
+// non-matches, never transparent.
+function findReachableViaEmptyTransits(graph, fromNodeId, toolName) {
+  const visited = new Set([fromNodeId]);
+  const candidates = [];
+  const queue = [...(graph._outgoing.get(fromNodeId) ?? [])];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const node = graph._byId.get(id);
+    if (!node) continue;
+    const tools = node.allowed_tools ?? [];
+    if (tools.length === 0) {
+      for (const next of graph._outgoing.get(id) ?? []) {
+        if (!visited.has(next)) queue.push(next);
+      }
+    } else if (tools.includes(toolName)) {
+      candidates.push(id);
+    }
+  }
+  candidates.sort();
+  return candidates[0] ?? null;
+}
+
+// Like findReachableViaEmptyTransits but returns ALL concrete destinations
+// reachable from fromNodeId (with their tools), so the deviation message
+// can show the agent its full move options instead of just immediate
+// successors that may include dead-end empty-tools nodes.
+function summarizeReachableDestinations(graph, fromNodeId) {
+  const visited = new Set([fromNodeId]);
+  const reachable = [];
+  const queue = [...(graph._outgoing.get(fromNodeId) ?? [])];
+  while (queue.length > 0) {
+    const id = queue.shift();
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const node = graph._byId.get(id);
+    if (!node) continue;
+    const tools = node.allowed_tools ?? [];
+    if (tools.length === 0) {
+      for (const next of graph._outgoing.get(id) ?? []) {
+        if (!visited.has(next)) queue.push(next);
+      }
+    } else {
+      reachable.push({ id, tools });
+    }
+  }
+  return reachable;
+}
+
 function enforceWorkflow(graph, state, toolName, params) {
   const currentNode = graph._byId.get(state.currentNode);
   if (!currentNode) {
@@ -2284,30 +2345,23 @@ function enforceWorkflow(graph, state, toolName, params) {
     state.reconsiderCounter = 0;
     return { decision: "allow", params };
   }
-  const outgoing = graph._outgoing.get(state.currentNode) ?? [];
-  const reachable = outgoing
-    .filter((id) => graph._byId.get(id)?.allowed_tools.includes(toolName))
-    .sort();
-  if (reachable.length > 0) {
-    state.currentNode = reachable[0];
+  const destination = findReachableViaEmptyTransits(graph, state.currentNode, toolName);
+  if (destination) {
+    state.currentNode = destination;
     state.reconsiderCounter = 0;
     return { decision: "allow", params };
   }
   state.reconsiderCounter += 1;
   const allowedHere = currentNode.allowed_tools.join(", ") || "(none)";
-  const nextNodes =
-    outgoing
-      .map((id) => {
-        const n = graph._byId.get(id);
-        if (!n) return `${id} (unknown)`;
-        const t = n.allowed_tools.join(", ") || "(none)";
-        return `${id} [${t}]`;
-      })
-      .join("; ") || "(none)";
+  const reachable = summarizeReachableDestinations(graph, state.currentNode);
+  const reachableSummary = reachable.length > 0
+    ? reachable.map(({ id, tools }) => `${id} [${tools.join(", ")}]`).join("; ")
+    : "(none)";
   const reason =
     `DEVIATION: tool '${toolName}' not allowed in node '${currentNode.id}' ` +
     `(${currentNode.purpose}). Allowed here: [${allowedHere}]. ` +
-    `Next nodes: [${nextNodes}]. Pick a tool from those lists.`;
+    `Reachable next (transitively through empty-tools nodes): [${reachableSummary}]. ` +
+    `Pick a tool from those lists.`;
   if (state.reconsiderCounter > graph.max_reconsider_retries) {
     return {
       decision: "block",
