@@ -79,7 +79,7 @@ openclaw config set plugins.allow '["betterclaw", "anthropic", "acpx"]'
 claude --plugin-dir $PWD/packages/plugin-cowork
 ```
 
-**Windows note:** `ln -sf` is Unix-only. Use `npm link` instead for cross-platform PATH setup. The Cowork plugin's `bin/hook-shim.sh` is a bash script and requires WSL or Git Bash on Windows.
+**Windows note:** `ln -sf` is Unix-only. Use `npm link` instead for cross-platform PATH setup. The Cowork plugin's hook shim (`bin/hook-shim.mjs`) is Node-based and cross-platform — no WSL or Git Bash needed for the shim itself, though the Claude CLI still requires Git Bash on Windows.
 
 **Pnpm workspace gotcha:** if `openclaw plugins install ... --link` fails with a "node_modules symlink target outside install root" safety scan error, that's pnpm's symlink-style node_modules. Add `--dangerously-force-unsafe-install` to bypass — safe since you control the source.
 
@@ -96,7 +96,7 @@ betterclaw "<paragraph>"
 betterclaw run "<task>"
 
 # Inspect what happened
-cat packages/plugin-openclaw/run.jsonl     # per-turn enforcement events
+cat ~/.betterclaw/run.jsonl                 # per-turn enforcement events
 betterclaw view                             # post-hoc replay HTML
 betterclaw view --watch                     # live view in browser
 ```

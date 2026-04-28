@@ -1,9 +1,9 @@
 # BetterClaw
 
-**v0.3.10** — workflow-enforcement layer for AI agents
+**v0.3.16** — workflow-enforcement layer for AI agents
 
 [![npm version](https://img.shields.io/npm/v/@betterclaw-ai/cli)](https://www.npmjs.com/package/@betterclaw-ai/cli)
-**Cross-platform:** Linux, macOS, Windows (PowerShell + Git Bash) — verified end-to-end on all three as of v0.3.10.
+**Cross-platform:** Linux, macOS, Windows (PowerShell + Git Bash) — verified end-to-end on all three as of v0.3.16.
 
 BetterClaw is the **workflow-enforcement layer** between your AI agent and its tools. You write a paragraph; BetterClaw compiles it into a workflow graph; the plugin enforces that graph at runtime. Tools come from the host environment ([Anthropic Cowork](https://claude.com/product/claude-cowork) connectors, [OpenClaw](https://openclaw.ai) MCP servers — with [Nous Research Hermes](https://nousresearch.com/hermes-3) and OpenAI agent runtimes on the roadmap). BetterClaw doesn't own or bundle them; it gates calls to them.
 
@@ -103,23 +103,38 @@ One row per attempted tool call — allowed, blocked, approved, denied — with 
 
 ### Live evidence (this isn't theoretical)
 
-Here's an actual run on a fresh Windows install (v0.3.10), compiling and enforcing the workflow `"summarize my inbox"` inside Claude Desktop:
+Here's an actual run on a fresh Windows install (v0.3.16), compiling and enforcing the workflow `"summarize my inbox and create draft replies to anything time-sensitive"` inside Claude Desktop:
 
 ```text
-❯ summarize my inbox
+❯ betterclaw chat "summarize my inbox and create draft replies to anything time-sensitive"
+
+  BETTERCLAW · COMPILE
+  host           [cowork]
+  tools          [64 tools] (cached 14m ago)
+  compiling via  claude -p (model=opus)
+
+  Compiled graph
+  entry            search_inbox
+  nodes            4  (search_inbox, read_thread, summarize_and_classify, draft_reply)
+
+  Approve this workflow? (y/N) y
+  ✓  Written to ~/.betterclaw/active-graph.json
+
+  Launching Claude with the BetterClaw plugin loaded…
+
+❯ summarize my inbox and create draft replies to anything time-sensitive
+
   ⎿  PreToolUse:ToolSearch hook returned blocking error
-  ⎿  DEVIATION: tool 'ToolSearch' not allowed in node 'search_inbox'
-     (Search recent messages in the inbox to gather material to summarize.)
-     Allowed here: [mcp__claude_ai_Gmail__search_threads]
-     Next nodes: [read_threads [mcp__claude_ai_Gmail__get_thread]]
-     Pick a tool from those lists.
+  ⎿  DEVIATION: tool 'ToolSearch' not allowed in node 'search_inbox'.
+     Allowed here: [mcp__claude_ai_Gmail__search_threads].
 
-  Called Gmail (ctrl+o to expand)
-
-● Here's a summary of your recent inbox (top 20 threads, all from today)…
+● Inbox summary (last ~3 days):
+  Threads that need a response: 2 — Joe Alerhand (UT Stock Transfer
+  DocuSign) and Julia Rahman (proSapient consultation request).
+  Both drafts are sitting in your Gmail Drafts folder ready for review.
 ```
 
-What happened, in order: the agent tried a generic `ToolSearch` (not in the workflow). BetterClaw's hook fired, blocked it, surfaced the allowed tools to the agent. The agent read the deviation message, switched to `mcp__claude_ai_Gmail__search_threads`, and completed the task with the *right* tool. Snap-back-on-deviation working live, on Windows, in Claude Desktop, no manual intervention.
+What happened, in order: the agent tried a generic `ToolSearch` first (not in the workflow). BetterClaw's hook blocked it and surfaced the allowed tools. The agent recovered and switched to `mcp__claude_ai_Gmail__search_threads`. It walked the graph: search → read each thread → transit through the empty-tools `summarize_and_classify` thinking node → land at `draft_reply` and call `mcp__claude_ai_Gmail__create_draft` for the two threads that needed responses. Snap-back-on-deviation working live, on Windows, in Claude Desktop, no manual intervention.
 
 ## Start here
 
@@ -152,18 +167,18 @@ Compile produces graphs that reference concrete tool names (`mcp__claude_ai_Gmai
 ## Quick demo
 
 ```bash
-# Tutorial path — zero external setup
-BETTERCLAW_DEMO=1 betterclaw "find a wireless mouse under $50, compare the top two"
+# Cowork path — single command does compile + open Claude with the plugin
+betterclaw chat "schedule a meeting next Tuesday and email the agenda"
 
-# Real workflow under Cowork (after enabling Gmail/Calendar in Claude.ai)
-betterclaw "schedule a meeting next Tuesday and email the agenda"
-
-# Real workflow under OpenClaw with your own MCP servers
+# Two-step (compile separately, then run with OpenClaw)
 betterclaw "search my Slack for messages about Q3 planning, draft a summary, ask me before posting"
 betterclaw run "<the same paragraph>"
+
+# Tutorial path — zero external setup
+BETTERCLAW_DEMO=1 betterclaw "find a wireless mouse under $50, compare the top two"
 ```
 
-You'll see `[ALLOW] node=... tool=...` lines on stderr as the agent walks through the graph, and `[DEVIATION] ...` lines (with a structured error visible to the agent) whenever it tries a tool outside the current node's allowlist. The same events land as JSONL in `packages/plugin-openclaw/run.jsonl` and drive the replay / live views.
+You'll see `[ALLOW] node=... tool=...` lines on stderr as the agent walks through the graph, and `[DEVIATION] ...` lines (with a structured error visible to the agent) whenever it tries a tool outside the current node's allowlist. The same events land as JSONL in `~/.betterclaw/run.jsonl` and drive the live `betterclaw view --watch` browser view (works for both Cowork and OpenClaw runtimes as of v0.3.16).
 
 ## Architecture snapshot
 
@@ -230,11 +245,18 @@ BetterClaw/
 ```bash
 # Compile a new workflow
 betterclaw "<paragraph>"       # compile → Mermaid preview → y/N → write graph
+betterclaw chat "<paragraph>"  # compile + open Claude with the plugin (Cowork)
 betterclaw --show              # print current graph JSON
 
 # Inspect the last run
 betterclaw view                # post-hoc replay HTML (static)
 betterclaw view --watch        # live server, browser re-polls every 500ms
+
+# Tool inventory cache (auto-probes Cowork on each compile, 1h TTL)
+betterclaw tools               # show cache state (size, age, expiry)
+betterclaw tools refresh       # force fresh probe (e.g. after enabling a connector)
+betterclaw tools show          # print cached tool names, one per line
+betterclaw tools clear         # delete the cache file
 
 # Approvals (if the graph has requires_approval)
 betterclaw pending             # list in-flight approval requests

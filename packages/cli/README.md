@@ -19,12 +19,14 @@ See `betterclaw --help` for the full list. The essentials:
 
 | Command | What it does |
 |---|---|
-| `betterclaw "<paragraph>"` | Compile a paragraph into `active-graph.json` (host-tool-aware prompt) |
+| `betterclaw "<paragraph>"` | Compile a paragraph into `active-graph.json` (probes Claude for the real tool inventory, feeds it to the compile prompt) |
+| `betterclaw chat "<paragraph>"` | Compile + open Claude with the BetterClaw plugin loaded — the recommended Cowork path |
 | `betterclaw run "<task>"` | Run `openclaw agent --local -m "<task>"` (auto-starts the Gmail daemon iff connected) |
+| `betterclaw tools [refresh\|show\|clear]` | Inspect / manage the cached tool inventory (1h TTL) |
 | `betterclaw connect gmail` / `disconnect gmail` | Opt-in / out of the bundled Gmail integration (OpenClaw users without Cowork) |
 | `betterclaw start` / `stop` / `status` | Gmail MCP daemon lifecycle (only relevant after `connect gmail`) |
 | `betterclaw pending` / `approve <id>` / `deny <id>` | Approval queue |
-| `betterclaw view --watch` | Live HTTP server + browser view |
+| `betterclaw view --watch` | Live HTTP server + browser view (works for both Cowork and OpenClaw runtimes as of v0.3.16) |
 | `betterclaw doctor` | Diagnose setup problems |
 | `betterclaw presets [name]` | List or install bundled presets |
 | `betterclaw save`/`load`/`list`/`fork`/`diff`/`publish` | Pattern library (paragraphs + graphs, sharable via gist) |
@@ -35,9 +37,9 @@ See `betterclaw --help` for the full list. The essentials:
 
 Per ADR 0002 (v0.3+), the plugin doesn't call the CLI for tool execution by default — tools come from the host environment (Cowork connectors or user MCP servers). The CLI is involved in:
 
-1. **Compile** (`betterclaw "<paragraph>"`) — invokes Claude CLI to produce a graph; writes to `active-graph.json` which the plugin reads on boot.
-2. **Approval dispatch** (`betterclaw approve <id>`) — when a graph has a Gmail-fallback approval, the CLI dispatches the call against the daemon's Gmail MCP. Only relevant when `betterclaw connect gmail` has been run.
-3. **Cowork hook subcommand** (`betterclaw hook <event>`) — invoked by the Cowork plugin's shell-command hook shim. Reads hook input JSON from stdin, runs enforcement, writes response JSON to stdout. Cold-starts Node per call (~100-150ms).
+1. **Compile** (`betterclaw "<paragraph>"` or `betterclaw chat "<paragraph>"`) — probes Claude for the real tool inventory (cached at `~/.betterclaw/tool-cache.json` for 1h), invokes Claude to produce a graph, writes `active-graph.json` which the plugin reads on boot.
+2. **Cowork hook subcommand** (`betterclaw hook <event>`) — invoked by the Cowork plugin's hook shim (`bin/hook-shim.mjs`). Reads hook input JSON from stdin, runs enforcement, writes response JSON to stdout, and emits `allow` / `deviation` / `approval_pending` / `approval_resolved` events to `~/.betterclaw/run.jsonl` for the live `betterclaw view --watch` UI. Cold-starts Node per call (~100-150ms).
+3. **Approval dispatch** (`betterclaw approve <id>`) — when an OpenClaw user has a Gmail-fallback approval, the CLI dispatches the call against the daemon's Gmail MCP. Only relevant when `betterclaw connect gmail` has been run. (Cowork users will get pause-and-resume approvals in v0.3.17 — currently the Cowork hook is fire-and-forget.)
 
 The Gmail MCP daemon (`mcp-daemon` mode) is opt-in. Without `betterclaw connect gmail`, the daemon stays dormant and `betterclaw start` refuses with a pointer.
 

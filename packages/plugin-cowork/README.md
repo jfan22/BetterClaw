@@ -2,7 +2,7 @@
 
 BetterClaw as an Anthropic Cowork plugin (Claude Desktop). Puts BetterClaw's compile + enforce + approval + audit primitives in front of every tool call Cowork makes.
 
-**Status:** v0.3.0. Works today with the hooks Cowork exposes (`PreToolUse`, `UserPromptSubmit`, `PostToolUse`). ADR 0001 empirically verified the SDK against BetterClaw's hook requirements on 2026-04-24; ADR 0002's Phase 0 spike (2026-04-26) verified the deferred-tool / `mcp__claude_ai_*` matcher behavior.
+**Status:** v0.3.16. Works today with the hooks Cowork exposes (`PreToolUse`, `UserPromptSubmit`, `PostToolUse`). ADR 0001 empirically verified the SDK against BetterClaw's hook requirements on 2026-04-24; ADR 0002's Phase 0 spike (2026-04-26) verified the deferred-tool / `mcp__claude_ai_*` matcher behavior.
 
 ## How it works
 
@@ -12,29 +12,32 @@ BetterClaw as an Anthropic Cowork plugin (Claude Desktop). Puts BetterClaw's com
 └──────────────────────────┘
               │
               ▼
-   hooks/hooks.json declares three shell-command hooks:
-     PreToolUse        → bin/hook-shim.sh pre-tool-call
-     UserPromptSubmit  → bin/hook-shim.sh user-prompt-submit
-     PostToolUse       → bin/hook-shim.sh post-tool-call
+   hooks/hooks.json declares three Node-based hooks:
+     PreToolUse        → node bin/hook-shim.mjs pre-tool-call
+     UserPromptSubmit  → node bin/hook-shim.mjs user-prompt-submit
+     PostToolUse       → node bin/hook-shim.mjs post-tool-call
               │
               ▼
-┌──────────────────────────┐
-│ bin/hook-shim.sh         │  1-line exec — requires `betterclaw` on PATH
-└──────────────────────────┘
+┌────────────────────────────┐
+│ bin/hook-shim.mjs          │  cross-platform Node shim — requires
+│                            │  `betterclaw` on PATH; uses shell:true on
+│                            │  Windows to invoke the .cmd binstub
+└────────────────────────────┘
               │
               ▼
 ┌──────────────────────────────────────────┐
 │ betterclaw hook <event>                  │  reads JSON from stdin,
-│ (shipped in @betterclaw-ai/cli)             │  runs enforcement,
+│ (shipped in @betterclaw-ai/cli)          │  runs enforcement,
 │                                          │  writes response JSON to stdout
 └──────────────────────────────────────────┘
               │
               │ loads the active workflow graph and shared approval queue
               ▼
-  packages/plugin-openclaw/active-graph.json   (shared with the OpenClaw plugin path)
-  packages/plugin-openclaw/approvals/          (shared with `betterclaw approve/deny`)
-  ~/.betterclaw/history.jsonl                  (cross-turn approval surfacing)
-  ~/.betterclaw/cowork-sessions.json           (per-session current-node tracking)
+  ~/.betterclaw/active-graph.json     (shared with the OpenClaw plugin path)
+  ~/.betterclaw/approvals/            (shared with `betterclaw approve/deny`)
+  ~/.betterclaw/history.jsonl         (cross-turn approval surfacing)
+  ~/.betterclaw/cowork-sessions.json  (per-session current-node tracking)
+  ~/.betterclaw/run.jsonl             (per-turn live-view event stream — v0.3.16)
 ```
 
 Hook dispatch latency: ~100-150ms per invocation (Node cold start for the CLI). Acceptable for V1; if it matters we promote to a socket-resident enforcement path in V2.
@@ -46,23 +49,18 @@ Prereqs:
 - Claude Desktop (latest) with Cowork enabled
 - `@betterclaw-ai/cli` on PATH — `npm install -g @betterclaw-ai/cli` (works on Linux, macOS, Windows; npm handles the per-platform shim creation)
 
-This plugin loads from a local directory (Claude Desktop's plugin loader doesn't pull from npm yet). Until v0.3.1 publishes `@betterclaw-ai/plugin-cowork` to npm, the simplest way to grab just this directory:
-
 ```bash
-git clone --depth 1 --filter=blob:none --sparse https://github.com/jfan22/BetterClaw.git
-cd BetterClaw
-git sparse-checkout set packages/plugin-cowork
-
-claude --plugin-dir $PWD/packages/plugin-cowork
+npm install -g @betterclaw-ai/plugin-cowork
+claude --plugin-dir "$(npm root -g)/@betterclaw-ai/plugin-cowork"
 ```
 
-Or, if you've already cloned the full repo for development:
+On Windows PowerShell, the path separator is `\`:
 
-```bash
-claude --plugin-dir /path/to/BetterClaw/packages/plugin-cowork
+```powershell
+claude --plugin-dir "$(npm root -g)\@betterclaw-ai\plugin-cowork"
 ```
 
-**Windows note:** the hook shim (`bin/hook-shim.sh`) is a bash script. On Windows you need [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) or Git Bash. Run the `claude --plugin-dir` command from the WSL/Git Bash shell, not PowerShell or CMD.
+The hook shim is `bin/hook-shim.mjs` (Node, cross-platform as of v0.3.10). **No WSL or Git Bash needed for the shim** — it works directly on Linux, macOS, and Windows. (The Claude CLI itself still requires Git Bash on Windows, but that's a Claude CLI requirement, not a BetterClaw one.)
 
 Verify it loaded: ask Claude to run a tool. You should see BetterClaw either:
 

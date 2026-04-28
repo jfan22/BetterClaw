@@ -8,7 +8,7 @@ Zero-to-first-agent in about 5 minutes. Three install paths depending on which a
 | **B. OpenClaw (CLI)** | Developers running their own MCP servers | ~10 min |
 | **C. Demo (no real tools)** | Trying BetterClaw out before committing | ~3 min |
 
-**Supported platforms** (verified end-to-end as of v0.3.10):
+**Supported platforms** (verified end-to-end as of v0.3.16):
 
 - ✅ Linux
 - ✅ macOS
@@ -39,7 +39,7 @@ Zero-to-first-agent in about 5 minutes. Three install paths depending on which a
 ```bash
 npm install -g @betterclaw-ai/cli @betterclaw-ai/plugin-openclaw
 
-betterclaw --version    # should print "betterclaw 0.3.1" or higher
+betterclaw --version    # should print "betterclaw 0.3.16" or higher
 ```
 
 That's it. Works on Linux, macOS, and Windows (Git Bash) — npm handles the per-platform binary shim creation. **No source clone, no symlinks, no PATH editing.**
@@ -76,13 +76,28 @@ claude --plugin-dir "$(npm root -g)\@betterclaw-ai\plugin-cowork"
 
 The plugin's hook shim is a Node script (cross-platform), so it works on Linux, macOS, and Windows directly. No WSL or Git Bash required.
 
-### A.3. Compile and run a workflow
+### A.3. Compile and run a workflow (one command)
 
 ```bash
-betterclaw "schedule a meeting next Tuesday and email the agenda to the team"
+betterclaw chat "schedule a meeting next Tuesday and email the agenda to the team"
 ```
 
-BetterClaw compiles your paragraph into a graph that references concrete tool names like `mcp__claude_ai_Google_Calendar__create_event` and `mcp__claude_ai_Gmail__send_email`. A Mermaid preview opens in your browser. Answer `y`. Then in Claude Desktop, ask the agent to do that workflow — the plugin enforces the graph.
+`betterclaw chat` compiles your paragraph into a workflow graph (probing Claude for the *real* tool inventory available in your Cowork session — Gmail, Calendar, Drive, Apollo connector tools — and feeding those names into the compile prompt so the graph can't reference tools that don't exist), shows you a Mermaid preview, asks `y/N`, then **launches Claude with the BetterClaw plugin already loaded** so you can immediately ask the agent to do the workflow. The plugin enforces the graph at every tool call.
+
+Two-step alternative if you want to compile and run separately:
+
+```bash
+betterclaw "<paragraph>"                # compile only — preview + y/N + write graph
+claude --plugin-dir "$(npm root -g)/@betterclaw-ai/plugin-cowork"   # then start Claude
+```
+
+**Live view (optional, for the curious):**
+
+```bash
+betterclaw view --watch
+```
+
+Opens a browser tab that polls every 500ms — visited nodes turn green, traversed edges go bold, deviation attempts appear as dashed-rust ghost nodes, pending approvals surface as banners with Approve/Deny buttons. Works for both Cowork and OpenClaw runtimes as of v0.3.16.
 
 ---
 
@@ -154,13 +169,25 @@ betterclaw view --watch
 # → opens http://127.0.0.1:<port>/
 ```
 
-In another terminal:
+In another terminal, run your workflow — either of these:
 
 ```bash
-betterclaw run "<your task>"
+betterclaw chat "<your task>"     # Cowork path — compile + launch Claude in one
+betterclaw run  "<your task>"     # OpenClaw path
 ```
 
-The browser re-renders the Mermaid graph live as the agent steps through it: visited nodes go green, traversed edges bold, attempted deviations appear as dashed red ghosts. Approval gates surface as banners with Approve/Deny buttons.
+The browser re-renders the Mermaid graph live as the agent steps through it: visited nodes go green, traversed edges bold, attempted deviations appear as dashed-rust ghosts. Approval gates surface as banners with Approve/Deny buttons. Works for both Cowork and OpenClaw runtimes as of v0.3.16.
+
+### Tool inventory cache
+
+BetterClaw probes Claude for the actual tool inventory available in your session before compiling, so the graph references real tool names rather than hardcoded hints. The result is cached at `~/.betterclaw/tool-cache.json` for one hour. If you enable a new connector in claude.ai mid-session and don't want to wait for the TTL:
+
+```bash
+betterclaw tools refresh    # force a fresh probe
+betterclaw tools            # show cache state (count, age, expiry)
+betterclaw tools show       # print cached names — pipe to grep
+betterclaw tools clear      # delete the cache file
+```
 
 ### Approvals
 
