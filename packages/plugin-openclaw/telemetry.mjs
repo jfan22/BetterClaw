@@ -22,9 +22,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-const IDENTITY_PATH = path.join(os.homedir(), ".betterclaw", "identity.json");
-const CONFIG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.json");
-const LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jsonl");
+// Paths are computed lazily so HOME overrides take effect, and so unit tests
+// can point telemetry at a tmpdir without re-importing the module.
+function getPaths() {
+  const home = path.join(os.homedir(), ".betterclaw");
+  return {
+    identity: path.join(home, "identity.json"),
+    config: path.join(home, "telemetry.json"),
+    log: path.join(home, "telemetry.jsonl"),
+  };
+}
 const PLUGIN_VERSION = "0.3.19";
 
 let _cachedIdentity = null;
@@ -32,10 +39,18 @@ let _cachedConfig = null;
 let _configCheckedMs = 0;
 const CONFIG_TTL_MS = 60 * 1000; // re-read config every minute
 
+// Test-only: reset the in-module caches so a fresh HOME / env var is picked
+// up immediately. Not part of the public API; only test code should call this.
+export function _resetTelemetryCachesForTesting() {
+  _cachedIdentity = null;
+  _cachedConfig = null;
+  _configCheckedMs = 0;
+}
+
 function loadIdentity() {
   if (_cachedIdentity) return _cachedIdentity;
   try {
-    _cachedIdentity = JSON.parse(fs.readFileSync(IDENTITY_PATH, "utf8"));
+    _cachedIdentity = JSON.parse(fs.readFileSync(getPaths().identity, "utf8"));
   } catch {
     _cachedIdentity = { device_id: "unknown" };
   }
@@ -57,7 +72,7 @@ function loadConfig() {
     return _cachedConfig;
   }
   try {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+    const cfg = JSON.parse(fs.readFileSync(getPaths().config, "utf8"));
     _cachedConfig = { enabled: cfg.enabled !== false };
   } catch {
     _cachedConfig = { enabled: true };
@@ -87,7 +102,7 @@ export function emitPluginTelemetry(event, properties = {}) {
     properties: properties || {},
   };
   try {
-    fs.appendFileSync(LOG_PATH, JSON.stringify(row) + "\n");
+    fs.appendFileSync(getPaths().log, JSON.stringify(row) + "\n");
   } catch {
     // Telemetry must never break enforcement. Swallow.
   }

@@ -15,11 +15,11 @@ export const HISTORY_PATH = path.join(os.homedir(), ".betterclaw", "history.json
 export const HISTORY_MAX_ENTRIES = 8;
 export const HISTORY_MAX_AGE_HOURS = 24;
 
-export function readRecentHistory() {
+export function readRecentHistory(historyPath = HISTORY_PATH) {
   try {
-    if (!fs.existsSync(HISTORY_PATH)) return [];
+    if (!fs.existsSync(historyPath)) return [];
     const cutoffMs = Date.now() - HISTORY_MAX_AGE_HOURS * 3600 * 1000;
-    const lines = fs.readFileSync(HISTORY_PATH, "utf8").split("\n").filter((l) => l.trim());
+    const lines = fs.readFileSync(historyPath, "utf8").split("\n").filter((l) => l.trim());
     const events = [];
     for (const line of lines) {
       try {

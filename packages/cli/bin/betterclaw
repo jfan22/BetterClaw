@@ -15,6 +15,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { runReset } from "../lib/reset.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1150,37 +1151,18 @@ if (args[0] === "telemetry") {
 // Always preserved: identity.json, telemetry.json/.jsonl, library/, mcp.log.
 if (args[0] === "reset") {
   const wipeAll = args.includes("--all") || args.includes("-a");
-  const wiped = [];
-  const skipped = [];
-
-  const tryUnlink = (p) => {
-    if (fs.existsSync(p)) {
-      try {
-        fs.unlinkSync(p);
-        wiped.push(p);
-      } catch (err) {
-        skipped.push(`${p} (${err.message})`);
-      }
-    }
-  };
-
-  tryUnlink(RUN_LOG_PATH);
-  tryUnlink(GRAPH_PATH);
-  tryUnlink(PARAGRAPH_PATH);
-  tryUnlink(COWORK_SESSIONS_PATH);
-  tryUnlink(HISTORY_PATH);
-
-  if (fs.existsSync(APPROVALS_DIR)) {
-    for (const entry of fs.readdirSync(APPROVALS_DIR)) {
-      if (/\.(pending|approved|denied)$/.test(entry)) {
-        tryUnlink(path.join(APPROVALS_DIR, entry));
-      }
-    }
-  }
-
-  if (wipeAll) {
-    tryUnlink(TOOL_CACHE_PATH);
-  }
+  const { wiped, skipped, keptToolCache } = runReset({
+    paths: {
+      runLog: RUN_LOG_PATH,
+      graph: GRAPH_PATH,
+      paragraph: PARAGRAPH_PATH,
+      coworkSessions: COWORK_SESSIONS_PATH,
+      history: HISTORY_PATH,
+      approvalsDir: APPROVALS_DIR,
+      toolCache: TOOL_CACHE_PATH,
+    },
+    all: wipeAll,
+  });
 
   console.log();
   console.log("  " + ui.kicker("BetterClaw · Reset"));
@@ -1196,9 +1178,9 @@ if (args[0] === "reset") {
     console.log(`  ${deny("✗")}  Skipped ${skipped.length}:`);
     for (const s of skipped) console.log(`     ${gray(s)}`);
   }
-  if (!wipeAll && fs.existsSync(TOOL_CACHE_PATH)) {
+  if (keptToolCache) {
     console.log();
-    console.log(`  ${dim("kept")}       ${gray(TOOL_CACHE_PATH)} ${gray("(use --all to also clear)")}`);
+    console.log(`  ${dim("kept")}       ${gray(keptToolCache)} ${gray("(use --all to also clear)")}`);
   }
   console.log();
   process.exit(0);

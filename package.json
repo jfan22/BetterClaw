@@ -7,7 +7,7 @@
     "setup": "pnpm install",
     "install-plugin": "openclaw plugins install $PWD/packages/plugin-openclaw --link",
     "doctor": "./packages/cli/bin/betterclaw doctor",
-    "test": "node --test packages/plugin-openclaw/test"
+    "test": "node --test packages/plugin-openclaw/test packages/cli/test"
   },
   "engines": {
     "node": ">=22",
