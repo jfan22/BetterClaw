@@ -4,6 +4,22 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.19] — 2026-04-29
+
+**Theme:** one-keystroke state wipe between demo recordings. Built while iterating on the PocketOS-incident demo, where stale `run.jsonl` events, an old `active-graph.json`, and 24h `history.jsonl` "Recent approvals" entries from prior demos kept leaking into fresh takes.
+
+### Added
+
+- **`betterclaw reset` subcommand.** Wipes per-run state in `~/.betterclaw/`: `run.jsonl`, `active-graph.json`, `active-paragraph.md`, `cowork-sessions.json`, `history.jsonl`, and any `approvals/*.{pending,approved,denied}` sentinels. **Keeps** `tool-cache.json` so the next compile doesn't pay the ~14s probe latency, **keeps** `identity.json` and `telemetry.json` so opt-out / device-id state persists, **keeps** `library/` so saved graphs are untouched.
+
+  `betterclaw reset --all` (or `-a`) also wipes `tool-cache.json`, forcing a fresh probe on the next compile. Use this when the cached tool inventory is stale (e.g. you changed which MCP servers your agent loads).
+
+  Recording sequence is now **reset → compile → start watch → start agent session**. One keystroke between takes instead of a 6-line `rm` block, which means fewer "I forgot to clean state" reshoots.
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.19 @betterclaw-ai/plugin-openclaw@0.3.19 @betterclaw-ai/plugin-cowork@0.3.19`. No state migration. The reset subcommand only touches files it lists explicitly, so it's safe to run against any existing state directory.
+
 ## [0.3.18] — 2026-04-29
 
 **Theme:** the tool probe can now see custom MCP servers and plugin-supplied tools. Found while building the PocketOS-incident demo, where the probe missed every `mcp__railway__*` tool because it ran without the `--mcp-config` flag the agent was about to use.

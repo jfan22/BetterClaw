@@ -180,7 +180,7 @@ const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jso
 // Refresh with `betterclaw tools refresh` or BETTERCLAW_REFRESH_TOOL_CACHE=1.
 const TOOL_CACHE_PATH = path.join(os.homedir(), ".betterclaw", "tool-cache.json");
 const TOOL_CACHE_TTL_MS = 60 * 60 * 1000;
-const BETTERCLAW_VERSION = "0.3.18";
+const BETTERCLAW_VERSION = "0.3.19";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
