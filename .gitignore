@@ -13,6 +13,9 @@ packages/plugin-openclaw/approvals/
 # Spike verification logs (local dogfood only)
 spikes/cowork-hook-verify/*.log
 
+# Demo recordings (large binaries; host externally — YouTube etc.)
+demo/**/*.mp4
+
 # Day-1 scaffolding — kept on disk locally as a disabled OpenClaw bundle,
 # but not something we want to track here.
 plugins/gmail-bundle/

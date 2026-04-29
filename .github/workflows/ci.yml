@@ -46,6 +46,9 @@ jobs:
             node --check "$f"
           done
 
+      - name: Unit tests
+        run: pnpm test
+
       - name: Verify CLI help runs
         run: ./packages/cli/bin/betterclaw --help > /dev/null
 
@@ -123,6 +126,8 @@ jobs:
           for f in packages/plugin-cowork/bin/*.mjs; do
             node --check "$f"
           done
+      - name: Unit tests
+        run: pnpm test
       - name: Verify CLI version prints
         run: node packages/cli/bin/betterclaw --version
       - name: Verify CLI help runs
