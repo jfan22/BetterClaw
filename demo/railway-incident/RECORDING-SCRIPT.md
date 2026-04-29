@@ -15,22 +15,13 @@ The mock Railway MCP server lives at `demo/railway-incident/server.mjs`. No deps
 
 ## Step 0 — clean-slate reset (DO BEFORE EVERY TAKE)
 
-The watch UI paints `~/.betterclaw/active-graph.json` and replays `~/.betterclaw/run.jsonl` on connect. If either is left over from a previous run, the browser opens with stale nodes, ghost deviations, and old approval chips. Run this before you hit record:
+The watch UI paints `~/.betterclaw/active-graph.json` and replays `~/.betterclaw/run.jsonl` on connect. If either is left over from a previous run, the browser opens with stale nodes, ghost deviations, and old approval chips. The `history.jsonl` 24h approval log also gets injected into every prompt as a "Recent approvals" preamble — if you've run other demos recently (e.g. the Apollo one), those entries appear in the recording's prompt panel and look out of place. One command wipes all of that:
 
 ```bash
-rm -f ~/.betterclaw/run.jsonl \
-      ~/.betterclaw/active-graph.json \
-      ~/.betterclaw/active-paragraph.md \
-      ~/.betterclaw/cowork-sessions.json \
-      ~/.betterclaw/history.jsonl
-rm -f ~/.betterclaw/approvals/*.pending \
-      ~/.betterclaw/approvals/*.approved \
-      ~/.betterclaw/approvals/*.denied
+betterclaw reset
 ```
 
-`history.jsonl` holds the past 24h of approved/denied tool calls and gets injected into every prompt as a "Recent approvals" preamble (so the agent doesn't re-attempt already-handled actions). If you've run other demos recently (e.g. the Apollo one), those entries appear in the recording's prompt panel and look out of place. Deleting it gives a clean preamble.
-
-Keep `~/.betterclaw/tool-cache.json` — that's the 14-second probe result, deleting it adds a noticeable stall to the compile.
+This wipes per-run state (run.jsonl, active-graph, active-paragraph, cowork-sessions, history, approval sentinels) and **keeps** `tool-cache.json` so the next compile doesn't pay the ~14s probe latency. Use `betterclaw reset --all` if you also want to force a fresh probe.
 
 **Order matters:** `betterclaw view --watch` exits with "no graph compiled yet" if `active-graph.json` is missing. So the recording sequence is **reset → compile → start watch → start claude session**. After the compile writes the fresh graph, watch boots and paints the new diagram with an empty event timeline. That's the clean lede — graph is correct, no ghost deviations, nothing in the timeline yet.
 

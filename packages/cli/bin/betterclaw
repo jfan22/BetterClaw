@@ -1138,6 +1138,72 @@ if (args[0] === "telemetry") {
   process.exit(0);
 }
 
+// Wipe per-run state. Useful between demo recordings (the run.jsonl
+// timeline, active-graph, history, and approval sentinels all leak from
+// run to run if you don't clean them) and as an escape hatch when the
+// state directory gets into a weird shape.
+//
+//   betterclaw reset         — wipes per-run state, keeps tool-cache.json
+//                              (fast iteration; next compile won't re-probe)
+//   betterclaw reset --all   — also clears tool-cache.json (forces ~14s probe)
+//
+// Always preserved: identity.json, telemetry.json/.jsonl, library/, mcp.log.
+if (args[0] === "reset") {
+  const wipeAll = args.includes("--all") || args.includes("-a");
+  const wiped = [];
+  const skipped = [];
+
+  const tryUnlink = (p) => {
+    if (fs.existsSync(p)) {
+      try {
+        fs.unlinkSync(p);
+        wiped.push(p);
+      } catch (err) {
+        skipped.push(`${p} (${err.message})`);
+      }
+    }
+  };
+
+  tryUnlink(RUN_LOG_PATH);
+  tryUnlink(GRAPH_PATH);
+  tryUnlink(PARAGRAPH_PATH);
+  tryUnlink(COWORK_SESSIONS_PATH);
+  tryUnlink(HISTORY_PATH);
+
+  if (fs.existsSync(APPROVALS_DIR)) {
+    for (const entry of fs.readdirSync(APPROVALS_DIR)) {
+      if (/\.(pending|approved|denied)$/.test(entry)) {
+        tryUnlink(path.join(APPROVALS_DIR, entry));
+      }
+    }
+  }
+
+  if (wipeAll) {
+    tryUnlink(TOOL_CACHE_PATH);
+  }
+
+  console.log();
+  console.log("  " + ui.kicker("BetterClaw · Reset"));
+  console.log("  " + ui.hr());
+  if (wiped.length === 0) {
+    console.log(`  ${dim("(nothing to wipe — state was already clean)")}`);
+  } else {
+    console.log(`  ${allow("✓")}  Wiped ${bold(wiped.length + (wiped.length === 1 ? " file" : " files"))}`);
+    for (const p of wiped) console.log(`     ${gray(p)}`);
+  }
+  if (skipped.length > 0) {
+    console.log();
+    console.log(`  ${deny("✗")}  Skipped ${skipped.length}:`);
+    for (const s of skipped) console.log(`     ${gray(s)}`);
+  }
+  if (!wipeAll && fs.existsSync(TOOL_CACHE_PATH)) {
+    console.log();
+    console.log(`  ${dim("kept")}       ${gray(TOOL_CACHE_PATH)} ${gray("(use --all to also clear)")}`);
+  }
+  console.log();
+  process.exit(0);
+}
+
 // Single-shot path: compile + confirm + spawn Claude with the Cowork plugin
 // loaded, all in one command. Removes the friction of running BetterClaw and
 // the Claude CLI as separate steps.
@@ -1504,6 +1570,8 @@ function printHelp() {
   console.log(pair(`betterclaw diff <a> <b>`,        `Side-by-side diff of two graphs`));
   console.log(pair(`betterclaw publish <name> --to gist`, `Publish via \`gh gist create\``));
   console.log(ui.section("  Misc"));
+  console.log(pair(`betterclaw reset`,               `Wipe per-run state (run.jsonl, graph, sessions, approvals, history)`));
+  console.log(pair(`betterclaw reset --all`,         `Also clear the tool-probe cache`));
   console.log(pair(`betterclaw --show`,              `Print the currently-active graph JSON`));
   console.log(pair(`betterclaw --version`,           `Print version`));
   console.log(pair(`betterclaw --help`,              `This message`));
