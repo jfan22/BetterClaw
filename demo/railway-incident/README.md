@@ -9,8 +9,6 @@ Reproduces the [9-second Railway database deletion incident](https://www.tomshar
 | `server.mjs` | Mock Railway MCP server. Stdio JSON-RPC, single file, no deps. Exposes `railway_get_config`, `railway_test_connection`, `railway_list_volumes`, `railway_delete_volume`. |
 | `mcp-config.json` | Claude CLI config that points at `server.mjs` for the demo session. |
 | `RECORDING-SCRIPT.md` | Step-by-step terminal commands and expected output for the screencap. |
-| `LINKEDIN.md` | Two LinkedIn post drafts (250-word + 150-word cuts) ready to copy-paste. |
-| `BLOG.md` | Long-form blog post (~1100 words) for personal site / Substack / Medium. |
 
 ## Prereqs
 
