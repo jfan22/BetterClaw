@@ -4,6 +4,23 @@ All notable changes to BetterClaw are documented here.
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). BetterClaw uses semver starting at v0.2.0; before that we shipped via git-commit version labels.
 
+## [0.3.18] — 2026-04-29
+
+**Theme:** the tool probe can now see custom MCP servers and plugin-supplied tools. Found while building the PocketOS-incident demo, where the probe missed every `mcp__railway__*` tool because it ran without the `--mcp-config` flag the agent was about to use.
+
+### Fixed
+
+- **`discoverAvailableTools()` now accepts MCP config and plugin-dir overrides for the probe.** Pre-v0.3.18 the probe spawned `claude -p --model haiku` with no MCP / plugin context, so it saw only the user's default tool inventory (Apollo / Gmail / Calendar / Drive / core tools). If the workflow needed a custom MCP server's tools, the compiler had no idea those tools existed and wrote a graph using filesystem fallbacks (`Read`/`Glob`/`Grep`/`Bash`). The runtime then blocked every legitimate call. Two new env vars make the probe match the agent's actual environment:
+
+  - `BETTERCLAW_PROBE_MCP_CONFIG=<path>` — passes `--mcp-config <path> --strict-mcp-config` to the probe so it loads the same MCP servers the agent will.
+  - `BETTERCLAW_PROBE_PLUGIN_DIR=<path>` — passes `--plugin-dir <path>` to the probe so plugin-contributed tools show up.
+
+  When unset, the probe behaves exactly as before. Set them when your workflow uses a custom MCP server (e.g. `BETTERCLAW_PROBE_MCP_CONFIG=demo/railway-incident/mcp-config.json betterclaw "<paragraph>"`).
+
+### Migration
+
+`npm install -g @betterclaw-ai/cli@0.3.18 @betterclaw-ai/plugin-openclaw@0.3.18 @betterclaw-ai/plugin-cowork@0.3.18`. No state migration. If you have a stale tool cache from before v0.3.18 that's missing tools your workflow needs, force a re-probe with `BETTERCLAW_REFRESH_TOOL_CACHE=1` or `betterclaw tools refresh`.
+
 ## [0.3.17] — 2026-04-28
 
 **Theme:** Cowork approval gates now actually pause the agent and resume it after human approval. The approval-gate demo finally lands.

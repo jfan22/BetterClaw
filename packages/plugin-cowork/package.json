@@ -1,6 +1,6 @@
 {
   "name": "@betterclaw-ai/plugin-cowork",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "description": "BetterClaw plugin for Anthropic Cowork (in Claude Desktop). Enforces workflow graphs over Cowork's verified connectors via shell-command hooks.",
   "license": "Apache-2.0",
   "author": "BetterClaw contributors",

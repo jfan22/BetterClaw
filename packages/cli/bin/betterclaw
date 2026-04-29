@@ -180,7 +180,7 @@ const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jso
 // Refresh with `betterclaw tools refresh` or BETTERCLAW_REFRESH_TOOL_CACHE=1.
 const TOOL_CACHE_PATH = path.join(os.homedir(), ".betterclaw", "tool-cache.json");
 const TOOL_CACHE_TTL_MS = 60 * 60 * 1000;
-const BETTERCLAW_VERSION = "0.3.17";
+const BETTERCLAW_VERSION = "0.3.18";
 
 function loadIdentity() {
   if (!fs.existsSync(IDENTITY_PATH)) return null;
@@ -4070,9 +4070,23 @@ async function discoverAvailableTools() {
   const probePrompt =
     `Output a JSON array of every tool name available to you in this session. Format strictly: ["tool1","tool2","tool3"]. Single line. No markdown fences. No prose. No explanation. Just the JSON array.`;
 
+  // If the workflow uses MCP servers configured via --mcp-config (or plugins
+  // loaded via --plugin-dir), the probe needs those flags too — otherwise
+  // it sees the user's default claude env and the compiler writes a workflow
+  // that calls tools the runtime doesn't have, OR misses tools the runtime
+  // does have (the demo case: Railway MCP).
+  const probeArgs = ["-p", "--output-format", "text", "--model", "haiku"];
+  if (process.env.BETTERCLAW_PROBE_MCP_CONFIG) {
+    probeArgs.push("--mcp-config", process.env.BETTERCLAW_PROBE_MCP_CONFIG);
+    probeArgs.push("--strict-mcp-config");
+  }
+  if (process.env.BETTERCLAW_PROBE_PLUGIN_DIR) {
+    probeArgs.push("--plugin-dir", process.env.BETTERCLAW_PROBE_PLUGIN_DIR);
+  }
+
   const result = spawnSync(
     "claude",
-    ["-p", "--output-format", "text", "--model", "haiku"],
+    probeArgs,
     winSpawnOpts({
       input: probePrompt,
       encoding: "utf8",
