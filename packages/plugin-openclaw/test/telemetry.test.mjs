@@ -23,14 +23,19 @@ import {
 
 let tmpHome;
 let originalHome;
+let originalUserProfile;
 let originalTelemetryEnv;
 
+// os.homedir() reads $HOME on POSIX and $USERPROFILE on Windows. Override
+// both so this test redirects telemetry to a tmpdir on every platform.
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "bc-tel-"));
   fs.mkdirSync(path.join(tmpHome, ".betterclaw"));
   originalHome = process.env.HOME;
+  originalUserProfile = process.env.USERPROFILE;
   originalTelemetryEnv = process.env.BETTERCLAW_TELEMETRY;
   process.env.HOME = tmpHome;
+  process.env.USERPROFILE = tmpHome;
   delete process.env.BETTERCLAW_TELEMETRY;
   _resetTelemetryCachesForTesting();
 });
@@ -38,6 +43,8 @@ beforeEach(() => {
 afterEach(() => {
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
+  if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = originalUserProfile;
   if (originalTelemetryEnv === undefined) delete process.env.BETTERCLAW_TELEMETRY;
   else process.env.BETTERCLAW_TELEMETRY = originalTelemetryEnv;
   fs.rmSync(tmpHome, { recursive: true, force: true });
