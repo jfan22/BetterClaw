@@ -122,7 +122,7 @@ const PRESETS_DIR = path.resolve(REPO_ROOT, "presets");
 // plugin's before_prompt_build hook reads from it to surface recent
 // approvals back to the agent, so it can avoid re-drafting things the user
 // already handled.
-const HISTORY_PATH = path.join(os.homedir(), ".betterclaw", "history.jsonl");
+const HISTORY_PATH = path.join(BETTERCLAW_HOME, "history.jsonl");
 
 // Gmail MCP proxy daemon. The daemon owns the @gongrzhe/server-gmail-autoauth-mcp
 // subprocess and multiplexes JSON-RPC requests from the plugin (read-path) and
@@ -163,7 +163,7 @@ function detectHost() {
 // long-lived plugin VM of OpenClaw, shell-command hooks fire per-invocation
 // with no in-memory state, so we persist current_node + reconsider_counter
 // across hook calls here. Keyed by the host's session_id.
-const COWORK_SESSIONS_PATH = path.join(os.homedir(), ".betterclaw", "cowork-sessions.json");
+const COWORK_SESSIONS_PATH = path.join(BETTERCLAW_HOME, "cowork-sessions.json");
 const COWORK_SESSION_TTL_MS = 60 * 60 * 1000; // 1h; prune on every write
 const HOOK_HISTORY_MAX_ENTRIES = 8;
 const HOOK_HISTORY_MAX_AGE_HOURS = 24;
@@ -179,7 +179,7 @@ const TELEMETRY_LOG_PATH = path.join(os.homedir(), ".betterclaw", "telemetry.jso
 // caching for 1h means the second-and-later compile in a session reuses the
 // answer. Connector enable/disable is rare, so 1h TTL is fine in practice.
 // Refresh with `betterclaw tools refresh` or BETTERCLAW_REFRESH_TOOL_CACHE=1.
-const TOOL_CACHE_PATH = path.join(os.homedir(), ".betterclaw", "tool-cache.json");
+const TOOL_CACHE_PATH = path.join(BETTERCLAW_HOME, "tool-cache.json");
 const TOOL_CACHE_TTL_MS = 60 * 60 * 1000;
 const BETTERCLAW_VERSION = "0.3.19";
 
