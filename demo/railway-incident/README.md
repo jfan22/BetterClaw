@@ -1,6 +1,6 @@
 # The PocketOS incident, blocked
 
-https://github.com/jfan22/BetterClaw/raw/main/demo/railway-incident/demo.mp4
+[![PocketOS incident, blocked by BetterClaw — 90s screencap](https://img.youtube.com/vi/ZreUtANHET0/maxresdefault.jpg)](https://www.youtube.com/watch?v=ZreUtANHET0)
 
 **Same Claude. Same prompt. Different outcome.**
 
