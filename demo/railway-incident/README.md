@@ -1,6 +1,10 @@
-# PocketOS-incident demo
+# The PocketOS incident, blocked
 
-Reproduces the [9-second Railway database deletion incident](https://www.tomshardware.com/tech-industry/artificial-intelligence/claude-powered-ai-coding-agent-deletes-entire-company-database-in-9-seconds-backups-zapped-after-cursor-tool-powered-by-anthropics-claude-goes-rogue) (PocketOS, 2026-04-25) inside BetterClaw's enforcement layer to show the same destructive call being blocked at the hook before it dispatches.
+https://github.com/jfan22/BetterClaw/raw/main/demo/railway-incident/demo.mp4
+
+**Same Claude. Same prompt. Different outcome.**
+
+April 25, 2026: a Cursor-Claude agent [deleted PocketOS's production Railway database in 9 seconds](https://www.tomshardware.com/tech-industry/artificial-intelligence/claude-powered-ai-coding-agent-deletes-entire-company-database-in-9-seconds-backups-zapped-after-cursor-tool-powered-by-anthropics-claude-goes-rogue). This demo runs the same scenario inside BetterClaw's enforcement layer — `railway_delete_volume` is blocked at the hook, before dispatch. No Railway account or credit card needed; the mock MCP server is a single Node file, zero deps. End-to-end run takes ~60 seconds once prereqs are installed.
 
 ## Files
 
@@ -12,10 +16,12 @@ Reproduces the [9-second Railway database deletion incident](https://www.tomshar
 
 ## Prereqs
 
+- Node 22+
+- `claude` CLI on PATH **and authenticated** — run `claude login` (recommended) or set `ANTHROPIC_API_KEY`. Without auth, the compile step exits 3 with "claude CLI failed".
 - `betterclaw` 0.3.17+ on PATH (`npm install -g @betterclaw-ai/cli`)
 - `@betterclaw-ai/plugin-cowork` 0.3.17+ installed (`npm install -g @betterclaw-ai/plugin-cowork`)
-- `claude` CLI on PATH (any current version)
-- Node 22+
+
+Run `betterclaw doctor` to confirm everything is wired up — it reports each missing piece with the exact fix command.
 
 ## Quick run
 

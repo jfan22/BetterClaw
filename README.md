@@ -1,9 +1,11 @@
 # BetterClaw
 
-**v0.3.16** — workflow-enforcement layer for AI agents
+**v0.3.19** — workflow-enforcement layer for AI agents
 
 [![npm version](https://img.shields.io/npm/v/@betterclaw-ai/cli)](https://www.npmjs.com/package/@betterclaw-ai/cli)
-**Cross-platform:** Linux, macOS, Windows (PowerShell + Git Bash) — verified end-to-end on all three as of v0.3.16.
+**Cross-platform:** Linux, macOS, Windows (PowerShell + Git Bash) — verified end-to-end on all three as of v0.3.19.
+
+**See it stop a real incident:** [demo/railway-incident](./demo/railway-incident/) reproduces the [9-second PocketOS-Railway deletion](https://www.tomshardware.com/tech-industry/artificial-intelligence/claude-powered-ai-coding-agent-deletes-entire-company-database-in-9-seconds-backups-zapped-after-cursor-tool-powered-by-anthropics-claude-goes-rogue) (April 2026) and shows BetterClaw blocking the destructive call. ~60 seconds to run end-to-end.
 
 BetterClaw is the **workflow-enforcement layer** between your AI agent and its tools. You write a paragraph; BetterClaw compiles it into a workflow graph; the plugin enforces that graph at runtime. Tools come from the host environment ([Anthropic Cowork](https://claude.com/product/claude-cowork) connectors, [OpenClaw](https://openclaw.ai) MCP servers — with [Nous Research Hermes](https://nousresearch.com/hermes-3) and OpenAI agent runtimes on the roadmap). BetterClaw doesn't own or bundle them; it gates calls to them.
 
