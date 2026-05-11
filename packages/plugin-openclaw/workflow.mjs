@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 
 // Per-user state dir, shared between the CLI and the plugin. Both write/read
 // through here so they stay in sync regardless of plugin install layout
@@ -165,6 +166,37 @@ export function resolveDefaultRunLogPath(_pluginRoot) {
 
 export function resolveApprovalsDir(_pluginRoot) {
   return path.join(BETTERCLAW_HOME, "approvals");
+}
+
+export function resolveDefaultParagraphPath(_pluginRoot) {
+  return path.join(BETTERCLAW_HOME, "active-paragraph.md");
+}
+
+export function sha256(text) {
+  return crypto.createHash("sha256").update(text).digest("hex");
+}
+
+// Returns one of:
+//   { status: "ok" }                                    — hash matches
+//   { status: "missing_field" }                         — graph predates the hash binding (legacy)
+//   { status: "missing_paragraph", graphHash }          — graph stores a hash but active-paragraph.md is gone
+//   { status: "drift", graphHash, paragraphHash }       — both present, hashes differ
+//
+// Drift means the paragraph on disk was edited without re-compiling, so the running
+// graph no longer reflects what the user wrote. The plugin should warn loudly but
+// NOT block — the user may be mid-edit, and refusing to enforce isn't safer than
+// enforcing a slightly stale spec.
+export function verifyGraphParagraphBinding(graph, paragraphPath) {
+  const graphHash = graph?.compiled_from?.paragraph_sha256;
+  if (!graphHash) return { status: "missing_field" };
+  if (!fs.existsSync(paragraphPath)) {
+    return { status: "missing_paragraph", graphHash };
+  }
+  const paragraphHash = sha256(fs.readFileSync(paragraphPath, "utf8"));
+  if (paragraphHash !== graphHash) {
+    return { status: "drift", graphHash, paragraphHash };
+  }
+  return { status: "ok" };
 }
 
 // Global cancellation signal — set when the plugin VM is shutting down so

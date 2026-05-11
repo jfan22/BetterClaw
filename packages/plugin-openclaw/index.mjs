@@ -27,6 +27,8 @@ import {
   resolveDefaultGraphPath,
   resolveDefaultRunLogPath,
   resolveApprovalsDir,
+  resolveDefaultParagraphPath,
+  verifyGraphParagraphBinding,
   createRunLogger,
 } from "./workflow.mjs";
 import { createEnforcer } from "./enforcement.mjs";
@@ -75,6 +77,34 @@ export default definePluginEntry({
       graph_entry: graph?.entry ?? null,
       graph_nodes: graph?.nodes.map((n) => n.id) ?? [],
     });
+
+    // Verify the active graph still binds to the paragraph it was compiled from.
+    // Drift means the user edited the paragraph without re-compiling — the
+    // running enforcement no longer matches the spec on disk. Warn loudly,
+    // don't block (the user may be mid-edit, and refusing to enforce isn't
+    // safer than enforcing slightly stale).
+    if (graph) {
+      const binding = verifyGraphParagraphBinding(graph, resolveDefaultParagraphPath(pluginRoot));
+      if (binding.status === "drift") {
+        api.logger?.warn?.(
+          `BetterClaw: paragraph drift detected — active-paragraph.md has been edited since compile. ` +
+            `Graph hash ${binding.graphHash.slice(0, 12)}…, paragraph hash ${binding.paragraphHash.slice(0, 12)}…. ` +
+            `Re-compile to update enforcement: betterclaw "<your paragraph>"`,
+        );
+        runLogger.append({
+          ts: new Date().toISOString(),
+          type: "paragraph_drift",
+          graph_hash: binding.graphHash,
+          paragraph_hash: binding.paragraphHash,
+        });
+      } else if (binding.status === "missing_paragraph") {
+        api.logger?.warn?.(
+          `BetterClaw: active-graph.json references a paragraph hash but active-paragraph.md is missing. ` +
+            `Re-compile to restore the binding: betterclaw "<your paragraph>"`,
+        );
+      }
+      // "missing_field" (legacy graph) and "ok" → silent.
+    }
 
     try {
       fs.mkdirSync(resolveApprovalsDir(pluginRoot), { recursive: true });

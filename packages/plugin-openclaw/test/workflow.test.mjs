@@ -13,6 +13,8 @@ import {
   freshState,
   waitForApproval,
   createRunLogger,
+  sha256,
+  verifyGraphParagraphBinding,
 } from "../workflow.mjs";
 
 function tmpDir() {
@@ -141,4 +143,53 @@ test("createRunLogger: append writes valid JSON lines, one per call", () => {
   assert.equal(lines.length, 2);
   assert.deepEqual(JSON.parse(lines[0]), { type: "allow", tool: "read" });
   assert.deepEqual(JSON.parse(lines[1]), { type: "deviation", tool: "delete" });
+});
+
+// Paragraph→graph content binding. The CLI stamps a sha256 of the paragraph
+// into graph.compiled_from at compile time; the plugin verifies on load.
+// Drift here means the spec on disk no longer matches the graph being enforced.
+test("verifyGraphParagraphBinding: ok when graph hash matches paragraph bytes", () => {
+  const dir = tmpDir();
+  const paragraphPath = path.join(dir, "active-paragraph.md");
+  const paragraph = "Diagnose a credential mismatch in our Railway staging environment.\n";
+  fs.writeFileSync(paragraphPath, paragraph);
+  const graph = { compiled_from: { paragraph_sha256: sha256(paragraph) } };
+
+  assert.deepEqual(verifyGraphParagraphBinding(graph, paragraphPath), { status: "ok" });
+});
+
+test("verifyGraphParagraphBinding: drift when paragraph edited without recompile", () => {
+  const dir = tmpDir();
+  const paragraphPath = path.join(dir, "active-paragraph.md");
+  const originalHash = sha256("original spec\n");
+  fs.writeFileSync(paragraphPath, "edited spec without recompile\n");
+  const graph = { compiled_from: { paragraph_sha256: originalHash } };
+
+  const result = verifyGraphParagraphBinding(graph, paragraphPath);
+  assert.equal(result.status, "drift");
+  assert.equal(result.graphHash, originalHash);
+  assert.equal(result.paragraphHash, sha256("edited spec without recompile\n"));
+});
+
+test("verifyGraphParagraphBinding: missing_field for legacy graphs without compiled_from", () => {
+  // Backward compat — graphs compiled before the binding shipped have no
+  // paragraph_sha256. The plugin should accept and silently load them; the
+  // user gets the binding on their next re-compile.
+  const dir = tmpDir();
+  const paragraphPath = path.join(dir, "active-paragraph.md");
+  fs.writeFileSync(paragraphPath, "any content\n");
+  const graph = { entry: "a", nodes: [], edges: [] };
+
+  assert.deepEqual(verifyGraphParagraphBinding(graph, paragraphPath), { status: "missing_field" });
+});
+
+test("verifyGraphParagraphBinding: missing_paragraph when graph stores a hash but the file is gone", () => {
+  const dir = tmpDir();
+  const paragraphPath = path.join(dir, "active-paragraph.md");
+  // Don't write the paragraph file.
+  const graph = { compiled_from: { paragraph_sha256: sha256("anything") } };
+
+  const result = verifyGraphParagraphBinding(graph, paragraphPath);
+  assert.equal(result.status, "missing_paragraph");
+  assert.equal(result.graphHash, sha256("anything"));
 });

@@ -15,6 +15,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 import { runReset } from "../lib/reset.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -4066,6 +4067,14 @@ async function compileAndConfirmParagraph(paragraph) {
 
   const approved = await renderAndConfirm(graph, paragraph);
   if (!approved) return false;
+
+  // Bind the graph to the exact paragraph bytes it was compiled from. The
+  // plugin verifies this at load time and warns on drift. Hash the paragraph
+  // as it will be written (with the trailing newline) so verify() matches.
+  graph.compiled_from = {
+    paragraph_sha256: crypto.createHash("sha256").update(paragraph + "\n").digest("hex"),
+    compiled_at: new Date().toISOString(),
+  };
 
   fs.writeFileSync(GRAPH_PATH, JSON.stringify(graph, null, 2) + "\n");
   fs.writeFileSync(PARAGRAPH_PATH, paragraph + "\n");
